@@ -1,0 +1,79 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Tajawal', system-ui, -apple-system, sans-serif;
+  }
+}
+
+.font-display {
+  font-family: 'Changa', 'Rubik', system-ui, sans-serif;
+}
+
+.font-heading {
+  font-family: 'Rubik', 'Changa', system-ui, sans-serif;
+}
+
+/* 3D Card Flip styles */
+.perspective-1000 {
+  perspective: 1000px;
+}
+
+.transform-style-preserve-3d {
+  transform-style: preserve-3d;
+}
+
+.backface-hidden {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.rotate-y-180 {
+  transform: rotateY(180deg);
+}
+
+/* Marquee bulb glowing animations */
+@keyframes bulbGlow {
+  0%, 100% {
+    opacity: 0.95;
+    filter: drop-shadow(0 0 8px rgba(253, 224, 71, 0.9)) drop-shadow(0 0 16px rgba(234, 179, 8, 0.6));
+  }
+  50% {
+    opacity: 0.6;
+    filter: drop-shadow(0 0 3px rgba(253, 224, 71, 0.5));
+  }
+}
+
+.animate-bulb-glow {
+  animation: bulbGlow 2.5s ease-in-out infinite;
+}
+
+.animate-bulb-glow-alt {
+  animation: bulbGlow 2.5s ease-in-out infinite 1.25s;
+}
+
+/* Strike shake animation */
+@keyframes strikeShake {
+  0% { transform: scale(0.3) rotate(-6deg); opacity: 0; }
+  40% { transform: scale(1.15) rotate(4deg); opacity: 1; }
+  60% { transform: scale(0.95) rotate(-2deg); }
+  80% { transform: scale(1.05) rotate(1deg); }
+  100% { transform: scale(1) rotate(0deg); opacity: 1; }
+}
+
+.animate-strike {
+  animation: strikeShake 0.45s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+
+/* Gold metallic gradient text */
+.text-gold-gradient {
+  background: linear-gradient(180deg, #FFF9C4 0%, #FDD835 30%, #F57F17 70%, #FFF59D 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.7));
+}
+
+/* Feud Studio Blue Gradient */
+.feud-stage-bg {
+  background: radial-gradient(circle at 50% 25%, #1e3a8a 0%, #0f172a 65%, #020617 100%);
+}

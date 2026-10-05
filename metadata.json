@@ -1,0 +1,6 @@
+{
+  "name": "فاميلي فيود بالعربي - Family Feud Arabic",
+  "description": "منصة لعبة فاميلي فيود التلفزيونية التفاعلية: شاشة عرض للجمهور وشاشة تحكم للمقدم، 4 جولات بمضاعفات النقاط، وجولة سريعة وبنك 105 أسئلة.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
