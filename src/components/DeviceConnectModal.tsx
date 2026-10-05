@@ -58,15 +58,21 @@ export function DeviceConnectModal({
   const getHostUrl = () => {
     const base = getBaseUrl();
     const pathname = typeof window !== 'undefined' ? window.location.pathname : '/';
-    const cleanPath = pathname === '/' ? '' : pathname;
-    return `${base}${cleanPath}?screen=host&room=${encodeURIComponent(roomId)}`;
+    let cleanPath = pathname;
+    if (!cleanPath.endsWith('/') && !cleanPath.endsWith('.html')) {
+      cleanPath += '/';
+    }
+    return `${base}${cleanPath}?mode=remote&room=${encodeURIComponent(roomId)}#remote`;
   };
 
   const getAudienceUrl = () => {
     const base = getBaseUrl();
     const pathname = typeof window !== 'undefined' ? window.location.pathname : '/';
-    const cleanPath = pathname === '/' ? '' : pathname;
-    return `${base}${cleanPath}?screen=audience&room=${encodeURIComponent(roomId)}`;
+    let cleanPath = pathname;
+    if (!cleanPath.endsWith('/') && !cleanPath.endsWith('.html')) {
+      cleanPath += '/';
+    }
+    return `${base}${cleanPath}?mode=display&room=${encodeURIComponent(roomId)}#display`;
   };
 
   // Generate QR code whenever isOpen, roomId, or customDomain changes
@@ -303,8 +309,14 @@ export function DeviceConnectModal({
         </div>
 
         {/* Summary note */}
-        <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 p-2.5 text-[11px] text-amber-200/90 leading-relaxed">
-          ✨ <strong>ملاحظة هامة:</strong> إذا ربطت دومين خاص بموقعك، يمكنك كتابته في خانة <strong>دومين الموقع</strong> في الأعلى وسيقوم الباركود فوراً بتوليد الرابط الخاص بدومينك لفتحه على الجوال بدون أي مشاكل!
+        <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/30 p-3 text-[11px] text-emerald-200 leading-relaxed space-y-1">
+          <div className="flex items-center gap-1.5 font-bold text-emerald-300">
+            <span>⚡</span>
+            <span>تزامن مباشر P2P عبر WebRTC (بدون سيرفر):</span>
+          </div>
+          <p>
+            الرابط المولد يعمل بصيغة مقاومة لـ 404 (<code className="bg-black/40 px-1 py-0.5 rounded text-amber-300 font-mono">?mode=remote&room={roomId}#remote</code>) ومتوافق 100% مع <strong>GitHub Pages</strong> وأي دومين خاص. يتصل هاتفك بالشاشة مباشرة في أجزاء من الثانية!
+          </p>
         </div>
       </div>
     </div>

@@ -1,4 +1,5 @@
 import { GameState, GameSyncMessage } from '../types/game';
+import { broadcastP2PMessage } from './p2pSync';
 
 const CHANNEL_NAME = 'family_feud_sync_channel';
 const STORAGE_KEY = 'family_feud_saved_state';
@@ -75,7 +76,10 @@ export function broadcastGameState(state: GameState, roomId: string = 'FEUD') {
     }
   }
 
-  // 2. Server broadcast with throttling (avoids freezing/lagging the browser)
+  // 2. WebRTC P2P direct sync to phone/display (serverless)
+  broadcastP2PMessage(msg);
+
+  // 3. Server broadcast with throttling (avoids freezing/lagging the browser)
   const serverBase = getSyncServerUrl();
   if (!serverBase) return; // Static host without backend, skip server fetch
 
@@ -130,6 +134,9 @@ export function broadcastSound(
       // ignore
     }
   }
+
+  // WebRTC P2P direct sound trigger
+  broadcastP2PMessage(msg);
 
   const serverBase = getSyncServerUrl();
   if (!serverBase) return;

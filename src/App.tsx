@@ -9,6 +9,7 @@ import {
   subscribeToSync,
 } from './utils/sync';
 import { playSound } from './utils/audio';
+import { initP2PSync } from './utils/p2pSync';
 import { AudienceScreen } from './components/AudienceScreen';
 import { HostController } from './components/HostController';
 import { DeviceConnectModal } from './components/DeviceConnectModal';
@@ -26,11 +27,24 @@ export default function App() {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const mode = params.get('mode') || params.get('screen');
-      if (mode === 'audience' || mode === 'tv') return 'audience';
-      if (mode === 'host' || mode === 'controller') return 'host';
+      const hash = window.location.hash.toLowerCase();
+      if (mode === 'remote' || mode === 'host' || mode === 'controller' || hash === '#remote') return 'host';
+      if (mode === 'audience' || mode === 'tv' || mode === 'display') return 'audience';
     }
     return 'audience';
   });
+
+  // Listen to hash changes (e.g. user toggles #remote in URL)
+  useEffect(() => {
+    const handleHashChange = () => {
+      const hash = window.location.hash.toLowerCase();
+      if (hash === '#remote') {
+        setScreenMode('host');
+      }
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
 
   // Pure TV fullscreen mode (hides the top navigation switcher)
   const [isTvCleanMode, setIsTvCleanMode] = useState<boolean>(() => {
@@ -78,6 +92,28 @@ export default function App() {
       unsubscribe();
     };
   }, [roomId]);
+
+  // WebRTC P2P Serverless Direct Sync (Zero-server sync for GitHub Pages and Phone ➔ TV)
+  useEffect(() => {
+    const role = screenMode === 'host' ? 'remote' : 'display';
+    const cleanup = initP2PSync(roomId, role, {
+      onStateUpdate: (remoteState) => {
+        setGameState((prev) => {
+          if (remoteState.lastUpdated && prev.lastUpdated && remoteState.lastUpdated <= prev.lastUpdated) {
+            return prev;
+          }
+          return remoteState;
+        });
+      },
+      onSoundTrigger: (sound) => {
+        playSound(sound);
+      },
+    });
+
+    return () => {
+      cleanup();
+    };
+  }, [roomId, screenMode]);
 
   // State updater that auto-broadcasts locally and to remote devices
   const updateState = useCallback(

@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>شاشة التحكم (الريموت)</title>
+    <script type="text/javascript">
+      // Instant redirect to main app in remote mode
+      var currentSearch = window.location.search || '';
+      var separator = currentSearch ? '&' : '?';
+      if (!currentSearch.includes('mode=remote') && !currentSearch.includes('screen=host')) {
+        currentSearch += separator + 'mode=remote';
+      }
+      window.location.replace('../' + currentSearch + '#remote');
+    </script>
+  </head>
+  <body>
+    <p>جاري تحويلك إلى شاشة التحكم (الريموت)...</p>
+  </body>
+</html>
