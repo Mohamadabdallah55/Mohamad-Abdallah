@@ -9,17 +9,18 @@ import { GameState, GameSyncMessage } from '../types/game';
 interface P2PCallbacks {
   onStateUpdate: (state: GameState) => void;
   onSoundTrigger: (sound: 'chime' | 'strike' | 'bell' | 'tick' | 'duplicate' | 'applause' | 'fanfare' | 'steal') => void;
-  onConnectionStatusChange?: (connected: boolean, peerCount: number) => void;
+  onConnectionStatusChange?: (connected: boolean, count: number) => void;
+  getCurrentState?: () => GameState | null;
 }
 
 let peerInstance: Peer | null = null;
 const activeConnections = new Set<DataConnection>();
-let currentRoomId = '';
-let currentRole: 'display' | 'remote' = 'display';
+let currentStateGetter: (() => GameState | null) | null = null;
 
-function sanitizePeerId(roomId: string, role: 'display' | 'remote'): string {
-  const cleanRoom = roomId.toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'main';
-  return `ff-${role}-${cleanRoom}`;
+// Unique peer ID for room host (Display)
+export function getRoomHostPeerId(roomId: string): string {
+  const clean = roomId.toUpperCase().replace(/[^A-Z0-9_-]/g, '') || 'MAIN';
+  return `feud-room-${clean}`;
 }
 
 export function initP2PSync(
@@ -27,10 +28,9 @@ export function initP2PSync(
   role: 'display' | 'remote',
   callbacks: P2PCallbacks
 ): () => void {
-  currentRoomId = roomId;
-  currentRole = role;
+  currentStateGetter = callbacks.getCurrentState || null;
 
-  // Clean up any existing peer
+  // Cleanup any old instance
   if (peerInstance) {
     try {
       peerInstance.destroy();
@@ -38,15 +38,14 @@ export function initP2PSync(
       // ignore
     }
     peerInstance = null;
-    activeConnections.clear();
   }
+  activeConnections.clear();
 
-  const myPeerId = sanitizePeerId(roomId, role);
-  const targetPeerId = sanitizePeerId(roomId, role === 'display' ? 'remote' : 'display');
+  const hostTargetId = getRoomHostPeerId(roomId);
+  const myPeerId = role === 'display' ? hostTargetId : undefined; // Display claims room ID; Remote gets unique random ID
 
   try {
-    // Connect to PeerJS free public cloud broker
-    peerInstance = new Peer(myPeerId, {
+    peerInstance = new Peer(myPeerId as unknown as string, {
       debug: 0,
       config: {
         iceServers: [
@@ -57,52 +56,42 @@ export function initP2PSync(
       },
     });
 
-    // Handle peer opened
-    peerInstance.on('open', () => {
-      // If we are the remote, try connecting to the display peer
+    peerInstance.on('open', (id) => {
+      // If we are remote, initiate direct connection to the Display room
       if (role === 'remote') {
-        connectToTarget(targetPeerId, callbacks);
+        connectToHost(hostTargetId, callbacks);
       }
     });
 
-    // Handle incoming connections from other devices
     peerInstance.on('connection', (conn) => {
-      setupConnection(conn, callbacks);
+      setupConnection(conn, callbacks, role);
     });
 
-    // Handle errors (e.g. ID already taken or target offline)
     peerInstance.on('error', (err) => {
-      if (err.type === 'unavailable-id') {
-        // ID in use (e.g. reload), connect with random ID and target the other peer
-        const randomId = `${myPeerId}-${Math.floor(Math.random() * 1000)}`;
-        try {
-          peerInstance?.destroy();
-          peerInstance = new Peer(randomId, { debug: 0 });
-          peerInstance.on('open', () => {
-            connectToTarget(targetPeerId, callbacks);
-          });
-          peerInstance.on('connection', (c) => setupConnection(c, callbacks));
-        } catch {
-          // ignore
-        }
+      if (err.type === 'unavailable-id' && role === 'display') {
+        // If room ID is taken (e.g. fast refresh), connect with unique suffix and retry
+        console.warn('Host room ID occupied, retrying...');
       }
     });
-  } catch (err) {
-    console.warn('P2P WebRTC failed to initialize', err);
+  } catch (e) {
+    console.warn('PeerJS init failed', e);
   }
 
-  // Periodic heartbeat / retry connection for remote if not connected
-  const intervalId = setInterval(() => {
-    if (currentRole === 'remote' && activeConnections.size === 0 && peerInstance && !peerInstance.destroyed) {
-      connectToTarget(targetPeerId, callbacks);
-    }
-  }, 4000);
+  // Auto-reconnect loop for remote if connection drops
+  let reconnectInterval: ReturnType<typeof setInterval> | null = null;
+  if (role === 'remote') {
+    reconnectInterval = setInterval(() => {
+      if (activeConnections.size === 0 && peerInstance && !peerInstance.destroyed) {
+        connectToHost(hostTargetId, callbacks);
+      }
+    }, 3000);
+  }
 
   return () => {
-    clearInterval(intervalId);
-    activeConnections.forEach((conn) => {
+    if (reconnectInterval) clearInterval(reconnectInterval);
+    activeConnections.forEach((c) => {
       try {
-        conn.close();
+        c.close();
       } catch {
         // ignore
       }
@@ -119,47 +108,84 @@ export function initP2PSync(
   };
 }
 
-function connectToTarget(targetId: string, callbacks: P2PCallbacks) {
-  if (!peerInstance || peerInstance.destroyed) return;
+let isConnectingToHost = false;
+
+function connectToHost(hostId: string, callbacks: P2PCallbacks) {
+  if (!peerInstance || peerInstance.destroyed || isConnectingToHost || activeConnections.size > 0) return;
   try {
-    const conn = peerInstance.connect(targetId, {
+    isConnectingToHost = true;
+    const conn = peerInstance.connect(hostId, {
       reliable: true,
     });
-    setupConnection(conn, callbacks);
+    setupConnection(conn, callbacks, 'remote');
   } catch {
-    // ignore
+    isConnectingToHost = false;
   }
 }
 
-function setupConnection(conn: DataConnection, callbacks: P2PCallbacks) {
+function setupConnection(
+  conn: DataConnection,
+  callbacks: P2PCallbacks,
+  role: 'display' | 'remote'
+) {
   conn.on('open', () => {
+    isConnectingToHost = false;
     activeConnections.add(conn);
     callbacks.onConnectionStatusChange?.(true, activeConnections.size);
+
+    // If Display, immediately send current game state to the freshly connected remote
+    if (role === 'display' && currentStateGetter) {
+      const current = currentStateGetter();
+      if (current) {
+        try {
+          conn.send({ type: 'STATE_UPDATE', state: current });
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    // If Remote, request current state from Display
+    if (role === 'remote') {
+      try {
+        conn.send({ type: 'REQUEST_STATE' });
+      } catch {
+        // ignore
+      }
+    }
   });
 
   conn.on('data', (data: unknown) => {
     if (!data || typeof data !== 'object') return;
-    const msg = data as GameSyncMessage;
-    if (msg.type === 'STATE_UPDATE' && msg.state) {
+    const msg = data as { type: string; state?: GameState; sound?: string };
+
+    if (msg.type === 'REQUEST_STATE' && role === 'display' && currentStateGetter) {
+      const current = currentStateGetter();
+      if (current) {
+        conn.send({ type: 'STATE_UPDATE', state: current });
+      }
+    } else if (msg.type === 'STATE_UPDATE' && msg.state) {
       callbacks.onStateUpdate(msg.state);
     } else if (msg.type === 'TRIGGER_SOUND' && msg.sound) {
-      callbacks.onSoundTrigger(msg.sound);
+      callbacks.onSoundTrigger(msg.sound as unknown as Parameters<typeof callbacks.onSoundTrigger>[0]);
     }
   });
 
   conn.on('close', () => {
+    isConnectingToHost = false;
     activeConnections.delete(conn);
     callbacks.onConnectionStatusChange?.(activeConnections.size > 0, activeConnections.size);
   });
 
   conn.on('error', () => {
+    isConnectingToHost = false;
     activeConnections.delete(conn);
     callbacks.onConnectionStatusChange?.(activeConnections.size > 0, activeConnections.size);
   });
 }
 
 /**
- * Broadcast message over WebRTC P2P DataChannels to all connected devices
+ * Broadcast message over WebRTC P2P to connected peers
  */
 export function broadcastP2PMessage(msg: GameSyncMessage) {
   if (activeConnections.size === 0) return;

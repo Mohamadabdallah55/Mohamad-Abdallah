@@ -11,6 +11,8 @@ interface HostControllerProps {
   triggerSound: (sound: 'chime' | 'strike' | 'bell' | 'tick' | 'duplicate' | 'applause' | 'fanfare' | 'steal') => void;
   onOpenConnectModal?: () => void;
   onSwitchToAudience?: () => void;
+  p2pConnected?: boolean;
+  roomId?: string;
 }
 
 export function HostController({
@@ -19,6 +21,8 @@ export function HostController({
   triggerSound,
   onOpenConnectModal,
   onSwitchToAudience,
+  p2pConnected = false,
+  roomId = 'FEUD',
 }: HostControllerProps) {
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -255,6 +259,31 @@ export function HostController({
 
       {/* Main Simplified Command Center */}
       <main className="mx-auto max-w-4xl space-y-4">
+        {/* P2P Live Connection Status Badge */}
+        <div
+          className={`flex items-center justify-between px-3.5 py-2 rounded-2xl border text-xs font-bold transition-all shadow-sm ${
+            p2pConnected
+              ? 'bg-emerald-950/70 border-emerald-500/60 text-emerald-300 shadow-[0_0_15px_rgba(16,185,129,0.2)]'
+              : 'bg-amber-950/70 border-amber-500/60 text-amber-300 shadow-[0_0_15px_rgba(245,158,11,0.2)]'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <span
+              className={`h-2.5 w-2.5 rounded-full ${
+                p2pConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400 animate-ping'
+              }`}
+            />
+            <span>
+              {p2pConnected
+                ? `🟢 متصل بالشاشة مباشرة عبر P2P (الغرفة: ${roomId})`
+                : `🟡 جاري الاتصال المباشر بالشاشة... (الغرفة: ${roomId})`}
+            </span>
+          </div>
+          <span className="font-mono text-[11px] bg-black/50 border border-slate-700 px-2 py-0.5 rounded-lg text-white">
+            كود الغرفة: {roomId}
+          </span>
+        </div>
+
         {/* 1. Scoreboard Bar */}
         <div className="grid grid-cols-3 gap-2 sm:gap-4 text-center">
           {/* Team A */}

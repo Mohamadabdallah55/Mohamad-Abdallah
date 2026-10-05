@@ -15,6 +15,9 @@ interface AudienceScreenProps {
   onDismissGameOver?: () => void;
   onToggleFullscreen?: () => void;
   isFullscreen?: boolean;
+  p2pConnected?: boolean;
+  p2pPeerCount?: number;
+  roomId?: string;
 }
 
 export function AudienceScreen({
@@ -23,6 +26,9 @@ export function AudienceScreen({
   onDismissGameOver,
   onToggleFullscreen,
   isFullscreen = false,
+  p2pConnected = false,
+  p2pPeerCount = 0,
+  roomId = 'FEUD',
 }: AudienceScreenProps) {
   const isGameOver = state.phase === 'GAME_OVER';
   const [isModalDismissed, setIsModalDismissed] = useState(false);
@@ -68,6 +74,16 @@ export function AudienceScreen({
               {roundMultiplierBadge()}
             </span>
           </div>
+
+          {p2pConnected && (
+            <div
+              title={`ريموت الهاتف متصل (${p2pPeerCount}) كود الغرفة: ${roomId}`}
+              className="hidden sm:flex items-center gap-1.5 rounded-2xl border border-emerald-500/50 bg-emerald-950/80 px-3 py-1.5 text-xs font-bold text-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.3)] animate-pulse"
+            >
+              <span className="h-2 w-2 rounded-full bg-emerald-400" />
+              <span>📱 ريموت متصل</span>
+            </div>
+          )}
 
           {onToggleFullscreen && (
             <button

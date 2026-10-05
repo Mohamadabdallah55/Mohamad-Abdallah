@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { GameState, GameSyncMessage } from './types/game';
 import { createInitialGameState } from './utils/gameDefaults';
 import {
@@ -15,13 +15,31 @@ import { HostController } from './components/HostController';
 import { DeviceConnectModal } from './components/DeviceConnectModal';
 
 export default function App() {
+  // Guaranteed unique room code per game (e.g. FEUD-4821 or from URL ?room=XXXX)
   const [roomId, setRoomId] = useState<string>(() => {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
-      return params.get('room')?.toUpperCase() || 'FEUD';
+      const fromUrl = params.get('room');
+      if (fromUrl && fromUrl.trim()) {
+        const clean = fromUrl.trim().toUpperCase();
+        try { sessionStorage.setItem('feud_active_room', clean); } catch {}
+        return clean;
+      }
+      try {
+        const saved = sessionStorage.getItem('feud_active_room');
+        if (saved) return saved;
+      } catch {}
     }
-    return 'FEUD';
+    const rand = Math.floor(1000 + Math.random() * 9000);
+    const newRoom = `FEUD-${rand}`;
+    if (typeof window !== 'undefined') {
+      try { sessionStorage.setItem('feud_active_room', newRoom); } catch {}
+    }
+    return newRoom;
   });
+
+  const [p2pConnected, setP2pConnected] = useState<boolean>(false);
+  const [p2pPeerCount, setP2pPeerCount] = useState<number>(0);
 
   const [screenMode, setScreenMode] = useState<'audience' | 'host'>(() => {
     if (typeof window !== 'undefined') {
@@ -63,6 +81,11 @@ export default function App() {
     return { ...createInitialGameState(), roomId };
   });
 
+  const gameStateRef = useRef(gameState);
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
+
   // Fetch initial remote state from server
   useEffect(() => {
     fetchRemoteState(roomId).then((remote) => {
@@ -97,6 +120,11 @@ export default function App() {
   useEffect(() => {
     const role = screenMode === 'host' ? 'remote' : 'display';
     const cleanup = initP2PSync(roomId, role, {
+      getCurrentState: () => gameStateRef.current,
+      onConnectionStatusChange: (connected, count) => {
+        setP2pConnected(connected);
+        setP2pPeerCount(count);
+      },
       onStateUpdate: (remoteState) => {
         setGameState((prev) => {
           if (remoteState.lastUpdated && prev.lastUpdated && remoteState.lastUpdated <= prev.lastUpdated) {
@@ -322,6 +350,9 @@ export default function App() {
           onDismissGameOver={dismissGameOver}
           onToggleFullscreen={() => handleToggleFullscreen()}
           isFullscreen={isFullscreen}
+          p2pConnected={p2pConnected}
+          p2pPeerCount={p2pPeerCount}
+          roomId={roomId}
         />
       ) : (
         <HostController
@@ -330,6 +361,8 @@ export default function App() {
           triggerSound={triggerSound}
           onOpenConnectModal={() => setShowConnectModal(true)}
           onSwitchToAudience={() => setScreenMode('audience')}
+          p2pConnected={p2pConnected}
+          roomId={roomId}
         />
       )}
 
