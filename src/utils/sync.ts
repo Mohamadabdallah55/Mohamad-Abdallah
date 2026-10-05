@@ -3,6 +3,7 @@ import { GameState, GameSyncMessage } from '../types/game';
 const CHANNEL_NAME = 'family_feud_sync_channel';
 const STORAGE_KEY = 'family_feud_saved_state';
 const SOUND_STORAGE_KEY = 'family_feud_sound_event';
+const CUSTOM_SYNC_SERVER_KEY = 'feud_sync_server_url';
 
 let broadcastChannel: BroadcastChannel | null = null;
 
@@ -12,6 +13,26 @@ try {
   }
 } catch (e) {
   console.warn('BroadcastChannel not initialized', e);
+}
+
+// Get the base API URL for server sync
+export function getSyncServerUrl(): string {
+  if (typeof window === 'undefined') return '';
+  
+  // 1. Check if user configured a custom sync server
+  const custom = localStorage.getItem(CUSTOM_SYNC_SERVER_KEY);
+  if (custom && custom.trim()) {
+    return custom.trim().replace(/\/+$/, '');
+  }
+
+  // 2. If running on GitHub Pages (static host), do NOT spam relative /api which 404s
+  if (window.location.hostname.includes('github.io')) {
+    // If on GitHub Pages without a configured server, we stay local (BroadcastChannel)
+    return '';
+  }
+
+  // 3. Normal fullstack environment (Express server running on same origin)
+  return window.location.origin;
 }
 
 export function saveGameStateToStorage(state: GameState) {
@@ -34,15 +55,18 @@ export function loadGameStateFromStorage(): GameState | null {
   return null;
 }
 
+let lastBroadcastTime = 0;
+let pendingBroadcastState: { state: GameState; roomId: string } | null = null;
+let broadcastTimeout: ReturnType<typeof setTimeout> | null = null;
+
 /**
- * Broadcast state update to both local tabs (via BroadcastChannel)
- * AND remote devices (via Backend Server API)
+ * Broadcast state update to local tabs and remote server (debounced to eliminate UI lag)
  */
-export async function broadcastGameState(state: GameState, roomId: string = 'FEUD') {
+export function broadcastGameState(state: GameState, roomId: string = 'FEUD') {
   saveGameStateToStorage(state);
   const msg: GameSyncMessage = { type: 'STATE_UPDATE', state };
 
-  // 1. Local broadcast
+  // 1. Instant local broadcast (tabs on the same browser)
   if (broadcastChannel) {
     try {
       broadcastChannel.postMessage(msg);
@@ -51,14 +75,39 @@ export async function broadcastGameState(state: GameState, roomId: string = 'FEU
     }
   }
 
-  // 2. Server broadcast to other devices
+  // 2. Server broadcast with throttling (avoids freezing/lagging the browser)
+  const serverBase = getSyncServerUrl();
+  if (!serverBase) return; // Static host without backend, skip server fetch
+
+  const now = Date.now();
+  if (now - lastBroadcastTime < 150) {
+    pendingBroadcastState = { state, roomId };
+    if (!broadcastTimeout) {
+      broadcastTimeout = setTimeout(() => {
+        broadcastTimeout = null;
+        if (pendingBroadcastState) {
+          const item = pendingBroadcastState;
+          pendingBroadcastState = null;
+          lastBroadcastTime = Date.now();
+          sendServerState(item.state, item.roomId, serverBase);
+        }
+      }, 160);
+    }
+    return;
+  }
+
+  lastBroadcastTime = now;
+  sendServerState(state, roomId, serverBase);
+}
+
+function sendServerState(state: GameState, roomId: string, serverBase: string) {
   try {
-    fetch(`/api/sync/state?room=${encodeURIComponent(roomId)}`, {
+    fetch(`${serverBase}/api/sync/state?room=${encodeURIComponent(roomId)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ state, room: roomId }),
     }).catch(() => {
-      // ignore network errors if offline
+      // ignore network errors silently
     });
   } catch {
     // ignore
@@ -66,15 +115,14 @@ export async function broadcastGameState(state: GameState, roomId: string = 'FEU
 }
 
 /**
- * Broadcast sound trigger to both local tabs and remote devices
+ * Broadcast sound trigger
  */
-export async function broadcastSound(
+export function broadcastSound(
   sound: 'chime' | 'strike' | 'bell' | 'tick' | 'duplicate' | 'applause' | 'fanfare' | 'steal',
   roomId: string = 'FEUD'
 ) {
   const msg: GameSyncMessage = { type: 'TRIGGER_SOUND', sound };
 
-  // 1. Local broadcast
   if (broadcastChannel) {
     try {
       broadcastChannel.postMessage(msg);
@@ -83,15 +131,11 @@ export async function broadcastSound(
     }
   }
 
-  try {
-    localStorage.setItem(SOUND_STORAGE_KEY, JSON.stringify({ sound, t: Date.now() }));
-  } catch {
-    // ignore
-  }
+  const serverBase = getSyncServerUrl();
+  if (!serverBase) return;
 
-  // 2. Server broadcast to other devices
   try {
-    fetch(`/api/sync/sound?room=${encodeURIComponent(roomId)}`, {
+    fetch(`${serverBase}/api/sync/sound?room=${encodeURIComponent(roomId)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sound, room: roomId }),
@@ -104,32 +148,41 @@ export async function broadcastSound(
 }
 
 /**
- * Fetch remote state from server
+ * Fetch remote state from server (with timeout to prevent freezing)
  */
 export async function fetchRemoteState(roomId: string = 'FEUD'): Promise<GameState | null> {
+  const serverBase = getSyncServerUrl();
+  if (!serverBase) return null;
+
   try {
-    const res = await fetch(`/api/sync/state?room=${encodeURIComponent(roomId)}`);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2500);
+
+    const res = await fetch(`${serverBase}/api/sync/state?room=${encodeURIComponent(roomId)}`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
     if (res.ok) {
       const data = await res.json();
       return (data.state as GameState) || null;
     }
-  } catch (e) {
-    console.warn('Could not fetch remote state', e);
+  } catch {
+    // Silently ignore if server is unreachable
   }
   return null;
 }
 
 /**
  * Subscribe to sync events:
- * 1. Server-Sent Events (SSE) for cross-device synchronization (phone, laptop, TV)
- * 2. BroadcastChannel for same-device tabs
- * 3. localStorage storage event fallback
+ * 1. BroadcastChannel (zero overhead, instant between tabs)
+ * 2. Server-Sent Events (SSE) with strict error-backoff to eliminate freezing
  */
 export function subscribeToSync(
   onMessage: (msg: GameSyncMessage) => void,
   roomId: string = 'FEUD'
 ): () => void {
-  // 1. Local BroadcastChannel
+  // 1. BroadcastChannel Listener
   const channelListener = (event: MessageEvent) => {
     if (event.data) {
       onMessage(event.data as GameSyncMessage);
@@ -140,58 +193,75 @@ export function subscribeToSync(
     broadcastChannel.addEventListener('message', channelListener);
   }
 
-  // 2. Storage event
-  const storageListener = (e: StorageEvent) => {
-    if (e.key === STORAGE_KEY && e.newValue) {
-      try {
-        const state = JSON.parse(e.newValue) as GameState;
-        onMessage({ type: 'STATE_UPDATE', state });
-      } catch (err) {
-        console.error('Error parsing storage state', err);
-      }
-    } else if (e.key === SOUND_STORAGE_KEY && e.newValue) {
-      try {
-        const data = JSON.parse(e.newValue);
-        if (data.sound) {
-          onMessage({ type: 'TRIGGER_SOUND', sound: data.sound });
+  // Fallback to storage event ONLY if BroadcastChannel is not supported
+  let storageListener: ((e: StorageEvent) => void) | null = null;
+  if (!broadcastChannel) {
+    storageListener = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY && e.newValue) {
+        try {
+          const state = JSON.parse(e.newValue) as GameState;
+          onMessage({ type: 'STATE_UPDATE', state });
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
+      } else if (e.key === SOUND_STORAGE_KEY && e.newValue) {
+        try {
+          const data = JSON.parse(e.newValue);
+          if (data.sound) {
+            onMessage({ type: 'TRIGGER_SOUND', sound: data.sound });
+          }
+        } catch {
+          // ignore
+        }
       }
-    }
-  };
-  window.addEventListener('storage', storageListener);
+    };
+    window.addEventListener('storage', storageListener);
+  }
 
-  // 3. Server-Sent Events for Cross-Device Synchronization
+  // 2. Server-Sent Events (SSE) with fail-safe error cutoff
   let eventSource: EventSource | null = null;
-  try {
-    eventSource = new EventSource(`/api/sync/events?room=${encodeURIComponent(roomId)}`);
+  const serverBase = getSyncServerUrl();
 
-    eventSource.onmessage = (event) => {
-      try {
-        const parsed = JSON.parse(event.data);
-        if (parsed.type === 'STATE_UPDATE' && parsed.state) {
-          onMessage({ type: 'STATE_UPDATE', state: parsed.state as GameState });
-        } else if (parsed.type === 'TRIGGER_SOUND' && parsed.sound) {
-          onMessage({ type: 'TRIGGER_SOUND', sound: parsed.sound });
+  if (serverBase) {
+    try {
+      let consecutiveErrors = 0;
+      eventSource = new EventSource(`${serverBase}/api/sync/events?room=${encodeURIComponent(roomId)}`);
+
+      eventSource.onmessage = (event) => {
+        consecutiveErrors = 0;
+        try {
+          const parsed = JSON.parse(event.data);
+          if (parsed.type === 'STATE_UPDATE' && parsed.state) {
+            onMessage({ type: 'STATE_UPDATE', state: parsed.state as GameState });
+          } else if (parsed.type === 'TRIGGER_SOUND' && parsed.sound) {
+            onMessage({ type: 'TRIGGER_SOUND', sound: parsed.sound });
+          }
+        } catch {
+          // ignore
         }
-      } catch (err) {
-        console.warn('Error handling SSE message', err);
-      }
-    };
+      };
 
-    eventSource.onerror = () => {
-      // Reconnects automatically by browser
-    };
-  } catch (err) {
-    console.warn('SSE not supported or failed to connect', err);
+      eventSource.onerror = () => {
+        consecutiveErrors++;
+        // If server fails or doesn't support SSE (e.g. GitHub Pages 404),
+        // disconnect immediately to prevent endless reconnect loops and browser lag
+        if (consecutiveErrors >= 2) {
+          eventSource?.close();
+          eventSource = null;
+        }
+      };
+    } catch {
+      // ignore
+    }
   }
 
   return () => {
     if (broadcastChannel) {
       broadcastChannel.removeEventListener('message', channelListener);
     }
-    window.removeEventListener('storage', storageListener);
+    if (storageListener) {
+      window.removeEventListener('storage', storageListener);
+    }
     if (eventSource) {
       eventSource.close();
     }

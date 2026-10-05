@@ -61,8 +61,14 @@ export default function App() {
   // Subscribe to BroadcastChannel & Server-Sent Events (SSE)
   useEffect(() => {
     const unsubscribe = subscribeToSync((msg: GameSyncMessage) => {
-      if (msg.type === 'STATE_UPDATE') {
-        setGameState(msg.state);
+      if (msg.type === 'STATE_UPDATE' && msg.state) {
+        setGameState((prev) => {
+          // Avoid echoing / re-rendering if update is older than or equal to current state
+          if (msg.state.lastUpdated && prev.lastUpdated && msg.state.lastUpdated <= prev.lastUpdated) {
+            return prev;
+          }
+          return msg.state;
+        });
       } else if (msg.type === 'TRIGGER_SOUND') {
         playSound(msg.sound);
       }
