@@ -13,9 +13,17 @@ interface AudienceScreenProps {
   onOpenControllerTab?: () => void;
   onRestartGame?: () => void;
   onDismissGameOver?: () => void;
+  onToggleFullscreen?: () => void;
+  isFullscreen?: boolean;
 }
 
-export function AudienceScreen({ state, onRestartGame, onDismissGameOver }: AudienceScreenProps) {
+export function AudienceScreen({
+  state,
+  onRestartGame,
+  onDismissGameOver,
+  onToggleFullscreen,
+  isFullscreen = false,
+}: AudienceScreenProps) {
   const isGameOver = state.phase === 'GAME_OVER';
   const [isModalDismissed, setIsModalDismissed] = useState(false);
 
@@ -51,13 +59,26 @@ export function AudienceScreen({ state, onRestartGame, onDismissGameOver }: Audi
           <FeudLogo size="medium" />
         </div>
 
-        {/* Center: Round Badge */}
-        <div className="hidden sm:flex items-center gap-2 rounded-2xl border-2 border-amber-400/80 bg-slate-950/90 px-4 py-2 shadow-[0_0_25px_rgba(251,191,36,0.35)]">
-          <span className={`font-display font-black text-xs md:text-sm px-2.5 py-0.5 rounded-md ${
-            state.roundMultiplier > 1 ? 'bg-amber-500 text-slate-950 animate-pulse' : 'text-amber-300'
-          }`}>
-            {roundMultiplierBadge()}
-          </span>
+        {/* Center: Round Badge & Fullscreen Button */}
+        <div className="flex items-center gap-2">
+          <div className="hidden sm:flex items-center gap-2 rounded-2xl border-2 border-amber-400/80 bg-slate-950/90 px-4 py-2 shadow-[0_0_25px_rgba(251,191,36,0.35)]">
+            <span className={`font-display font-black text-xs md:text-sm px-2.5 py-0.5 rounded-md ${
+              state.roundMultiplier > 1 ? 'bg-amber-500 text-slate-950 animate-pulse' : 'text-amber-300'
+            }`}>
+              {roundMultiplierBadge()}
+            </span>
+          </div>
+
+          {onToggleFullscreen && (
+            <button
+              onClick={onToggleFullscreen}
+              title={isFullscreen ? 'الخروج من ملء الشاشة' : 'تكبير الشاشة بالكامل (إخفاء سيرش جوجل وأشرطة المتصفح)'}
+              className="flex items-center gap-1.5 rounded-2xl border-2 border-amber-400/80 bg-slate-950/90 hover:bg-slate-900 px-3.5 py-2 text-xs font-bold text-amber-300 shadow-[0_0_20px_rgba(251,191,36,0.3)] active:scale-95 transition-all"
+            >
+              <span>{isFullscreen ? '🗗' : '⛶'}</span>
+              <span className="hidden md:inline">{isFullscreen ? 'تصغير' : 'ملء الشاشة'}</span>
+            </button>
+          )}
         </div>
 
         {/* Left side in RTL: Ibn Taymiyyah Mosque Logo */}

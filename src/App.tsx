@@ -109,6 +109,73 @@ export default function App() {
     }));
   };
 
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Sync fullscreen state with browser events
+  useEffect(() => {
+    const handleFsChange = () => {
+      const active = Boolean(document.fullscreenElement);
+      setIsFullscreen(active);
+      if (!active && !isTvCleanMode) {
+        // Exited fullscreen
+      }
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    document.addEventListener('webkitfullscreenchange', handleFsChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFsChange);
+      document.removeEventListener('webkitfullscreenchange', handleFsChange);
+    };
+  }, [isTvCleanMode]);
+
+  // Enter or exit true browser fullscreen (hides Google search bar & tabs)
+  const handleToggleFullscreen = async (forceEnter?: boolean) => {
+    try {
+      const elem = document.documentElement as HTMLElement & {
+        webkitRequestFullscreen?: () => Promise<void>;
+        mozRequestFullScreen?: () => Promise<void>;
+        msRequestFullscreen?: () => Promise<void>;
+      };
+      const doc = document as Document & {
+        webkitExitFullscreen?: () => Promise<void>;
+        mozCancelFullScreen?: () => Promise<void>;
+        msExitFullscreen?: () => Promise<void>;
+      };
+
+      const shouldEnter = forceEnter !== undefined ? forceEnter : !document.fullscreenElement;
+
+      if (shouldEnter) {
+        setIsTvCleanMode(true);
+        if (elem.requestFullscreen) {
+          await elem.requestFullscreen();
+        } else if (elem.webkitRequestFullscreen) {
+          await elem.webkitRequestFullscreen();
+        } else if (elem.mozRequestFullScreen) {
+          await elem.mozRequestFullScreen();
+        } else if (elem.msRequestFullscreen) {
+          await elem.msRequestFullscreen();
+        }
+      } else {
+        setIsTvCleanMode(false);
+        if (document.fullscreenElement) {
+          if (doc.exitFullscreen) {
+            await doc.exitFullscreen();
+          } else if (doc.webkitExitFullscreen) {
+            await doc.webkitExitFullscreen();
+          } else if (doc.mozCancelFullScreen) {
+            await doc.mozCancelFullScreen();
+          } else if (doc.msExitFullscreen) {
+            await doc.msExitFullscreen();
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Browser fullscreen error:', err);
+      // Fallback: still clean UI
+      setIsTvCleanMode(true);
+    }
+  };
+
   const handleRoomChange = (newRoom: string) => {
     setRoomId(newRoom);
     const url = new URL(window.location.href);
@@ -166,11 +233,12 @@ export default function App() {
             {/* Clean TV Full View Toggle */}
             {screenMode === 'audience' && (
               <button
-                onClick={() => setIsTvCleanMode(true)}
-                title="إخفاء الشريط العلوي للعرض التلفزيوني الكامل"
-                className="rounded-xl border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white"
+                onClick={() => handleToggleFullscreen(true)}
+                title="إخفاء شريط العنوان وسيرش جوجل وتشغيل وضع ملء الشاشة الكامل"
+                className="flex items-center gap-1.5 rounded-xl border border-amber-400/80 bg-gradient-to-r from-amber-500/30 to-amber-600/30 px-3 py-1.5 text-xs font-bold text-amber-200 hover:brightness-125 hover:text-white shadow-[0_0_12px_rgba(245,158,11,0.25)] transition-all"
               >
-                وضع التلفزيون الكامل 📺
+                <span>⛶</span>
+                <span>وضع التلفزيون الكامل (ملء الشاشة)</span>
               </button>
             )}
 
@@ -185,13 +253,22 @@ export default function App() {
           </div>
         </nav>
       ) : (
-        /* Discreet button to unhide bar in TV mode */
-        <button
-          onClick={() => setIsTvCleanMode(false)}
-          className="fixed top-2 left-2 z-50 rounded-lg bg-black/40 hover:bg-black/80 px-2.5 py-1 text-[11px] text-slate-400 hover:text-white backdrop-blur-sm transition-all opacity-25 hover:opacity-100"
-        >
-          ⚙️ إظهار الشريط
-        </button>
+        /* Discreet floating buttons in TV mode */
+        <div className="fixed top-2 left-2 z-50 flex items-center gap-2 opacity-25 hover:opacity-100 transition-opacity">
+          <button
+            onClick={() => handleToggleFullscreen(false)}
+            className="flex items-center gap-1 rounded-lg bg-black/60 hover:bg-black/90 px-2.5 py-1 text-[11px] font-bold text-amber-300 hover:text-white backdrop-blur-md transition-all shadow"
+          >
+            <span>⛶</span>
+            <span>خروج من ملء الشاشة</span>
+          </button>
+          <button
+            onClick={() => setIsTvCleanMode(false)}
+            className="rounded-lg bg-black/60 hover:bg-black/90 px-2.5 py-1 text-[11px] text-slate-300 hover:text-white backdrop-blur-md transition-all shadow"
+          >
+            ⚙️ إظهار الشريط
+          </button>
+        </div>
       )}
 
       {/* Screen Views */}
@@ -201,6 +278,8 @@ export default function App() {
           onOpenControllerTab={() => setScreenMode('host')}
           onRestartGame={resetGame}
           onDismissGameOver={dismissGameOver}
+          onToggleFullscreen={() => handleToggleFullscreen()}
+          isFullscreen={isFullscreen}
         />
       ) : (
         <HostController
