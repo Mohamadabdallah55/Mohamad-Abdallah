@@ -4,6 +4,7 @@ import { INITIAL_QUESTIONS } from '../data/questions';
 import { getMultiplierForRound, pickNewQuestion } from '../utils/gameDefaults';
 import { FeudLogo } from './FeudLogo';
 import { IbnTaymiyyahLogo } from './IbnTaymiyyahLogo';
+import { AnimatedCounter } from './AnimatedCounter';
 
 interface HostControllerProps {
   state: GameState;
@@ -38,11 +39,22 @@ export function HostController({
     'السفر، العمل والوظائف',
   ];
 
+  // Interactive Haptic Feedback for Mobile Remote Pro
+  const triggerHaptic = (pattern: number | number[] = 50) => {
+    if (typeof window !== 'undefined' && 'navigator' in window && 'vibrate' in navigator) {
+      try {
+        navigator.vibrate(pattern);
+      } catch {}
+    }
+  };
+
   // Reveal a specific answer
   const handleRevealAnswer = (index: number) => {
     if (!state.currentQuestion) return;
     const answer = state.currentQuestion.answers[index];
     const isCurrentlyRevealed = state.revealedAnswers[index];
+
+    triggerHaptic(isCurrentlyRevealed ? 35 : 60);
 
     updateState((prev) => {
       const newRevealed = [...prev.revealedAnswers];
@@ -65,6 +77,8 @@ export function HostController({
 
   // Trigger strike
   const handleStrike = () => {
+    triggerHaptic([120, 60, 120]);
+
     updateState((prev) => {
       const nextStrikes = Math.min(3, prev.strikes + 1);
       const enterSteal = nextStrikes === 3 && prev.phase === 'GUESSING';
@@ -91,6 +105,7 @@ export function HostController({
 
   // Reset strikes
   const handleResetStrikes = () => {
+    triggerHaptic(40);
     updateState((prev) => ({
       ...prev,
       strikes: 0,
@@ -100,6 +115,7 @@ export function HostController({
 
   // Face off selection
   const handleSetTurn = (team: 'A' | 'B') => {
+    triggerHaptic(45);
     triggerSound('bell');
     updateState((prev) => ({
       ...prev,
@@ -108,8 +124,9 @@ export function HostController({
     }));
   };
 
-  // Award round bank to team (no annoying point transfer sound)
+  // Award round bank to team
   const handleAwardBank = (team: 'A' | 'B') => {
+    triggerHaptic([80, 40, 80, 40, 160]);
     updateState((prev) => {
       const teamAAdd = team === 'A' ? prev.roundBank : 0;
       const teamBAdd = team === 'B' ? prev.roundBank : 0;
@@ -126,6 +143,7 @@ export function HostController({
 
   // Resolve Steal
   const handleResolveSteal = (success: boolean) => {
+    triggerHaptic(success ? [70, 40, 120] : [120, 60, 120]);
     if (success) {
       updateState((prev) => {
         const beneficiary = prev.stealTeam || (prev.activeTeam === 'A' ? 'B' : 'A');
@@ -160,6 +178,7 @@ export function HostController({
 
   // Next Round / Next Question
   const handleNextRound = () => {
+    triggerHaptic([60, 40, 60]);
     updateState((prev) => {
       const nextRound = prev.currentRound < 4 ? prev.currentRound + 1 : prev.currentRound;
       const multiplier = getMultiplierForRound(nextRound);
@@ -284,23 +303,23 @@ export function HostController({
           </span>
         </div>
 
-        {/* 1. Scoreboard Bar */}
+        {/* 1. Scoreboard Bar with Animated Counters */}
         <div className="grid grid-cols-3 gap-2 sm:gap-4 text-center">
           {/* Team A */}
           <div
             onClick={() => handleSetTurn('A')}
             className={`cursor-pointer rounded-2xl border-2 p-3 transition-all ${
               state.activeTeam === 'A'
-                ? 'border-amber-400 bg-blue-950/80 shadow-[0_0_20px_rgba(251,191,36,0.4)]'
+                ? 'border-amber-400 bg-blue-950/80 shadow-[0_0_20px_rgba(251,191,36,0.4)] scale-[1.02]'
                 : 'border-slate-800 bg-slate-900/60'
             }`}
           >
             <div className="flex items-center justify-center gap-1 text-xs text-blue-300 font-bold truncate">
               <span>{state.teamA.name}</span>
-              {state.activeTeam === 'A' && <span className="text-[10px] bg-amber-400 text-slate-950 px-1 rounded">يلعب</span>}
+              {state.activeTeam === 'A' && <span className="text-[10px] bg-amber-400 text-slate-950 px-1.5 py-0.5 rounded font-black">يلعب</span>}
             </div>
             <div className="font-display font-black text-2xl md:text-4xl text-white tabular-nums mt-0.5">
-              {state.teamA.score}
+              <AnimatedCounter value={state.teamA.score} />
             </div>
           </div>
 
@@ -310,7 +329,7 @@ export function HostController({
               بنك الجولة {state.currentRound}/4 {state.roundMultiplier > 1 ? `(×${state.roundMultiplier})` : ''}
             </span>
             <div className="font-display font-black text-3xl md:text-5xl text-gold-gradient tabular-nums">
-              {state.roundBank}
+              <AnimatedCounter value={state.roundBank} />
             </div>
           </div>
 
@@ -319,96 +338,120 @@ export function HostController({
             onClick={() => handleSetTurn('B')}
             className={`cursor-pointer rounded-2xl border-2 p-3 transition-all ${
               state.activeTeam === 'B'
-                ? 'border-amber-400 bg-blue-950/80 shadow-[0_0_20px_rgba(251,191,36,0.4)]'
+                ? 'border-amber-400 bg-blue-950/80 shadow-[0_0_20px_rgba(251,191,36,0.4)] scale-[1.02]'
                 : 'border-slate-800 bg-slate-900/60'
             }`}
           >
             <div className="flex items-center justify-center gap-1 text-xs text-indigo-300 font-bold truncate">
               <span>{state.teamB.name}</span>
-              {state.activeTeam === 'B' && <span className="text-[10px] bg-amber-400 text-slate-950 px-1 rounded">يلعب</span>}
+              {state.activeTeam === 'B' && <span className="text-[10px] bg-amber-400 text-slate-950 px-1.5 py-0.5 rounded font-black">يلعب</span>}
             </div>
             <div className="font-display font-black text-2xl md:text-4xl text-white tabular-nums mt-0.5">
-              {state.teamB.score}
+              <AnimatedCounter value={state.teamB.score} />
             </div>
           </div>
         </div>
 
-        {/* 2. Current Question Box */}
+        {/* 2. Current Question Box & Hidden Answers List (Mobile Remote Pro) */}
         <div className="rounded-3xl border-2 border-blue-500/40 bg-gradient-to-b from-blue-950 to-slate-950 p-4 md:p-6 shadow-xl">
-          <div className="flex items-center justify-between border-b border-blue-500/20 pb-2 mb-3">
-            <span className="rounded-lg bg-blue-500/20 px-2.5 py-0.5 text-xs font-bold text-blue-300">
-              سؤال الجولة {state.currentRound} · {state.currentQuestion?.category}
-            </span>
+          <div className="flex items-center justify-between border-b border-blue-500/20 pb-2.5 mb-3">
+            <div className="flex items-center gap-2">
+              <span className="rounded-lg bg-blue-500/20 px-2.5 py-1 text-xs font-bold text-blue-300">
+                سؤال الجولة {state.currentRound} · {state.currentQuestion?.category}
+              </span>
+              <span className="text-[11px] text-amber-400/90 font-bold hidden sm:inline">
+                (الإجابات ظاهرة لك فقط حتى تكشفها)
+              </span>
+            </div>
             <button
               onClick={() => setShowQuestionsDrawer(true)}
-              className="rounded-lg bg-blue-900/60 border border-blue-400/40 px-3 py-1 text-xs font-bold text-blue-200 hover:bg-blue-800"
+              className="rounded-xl bg-blue-900/60 border border-blue-400/40 px-3 py-1.5 text-xs font-bold text-blue-200 hover:bg-blue-800 active:scale-95 transition-all"
             >
-              📚 تغيير السؤال من بنك الـ 105
+              📚 تغيير السؤال (بنك 105)
             </button>
           </div>
 
-          <h2 className="font-display font-extrabold text-xl md:text-2xl text-white text-center py-1">
+          <h2 className="font-display font-extrabold text-xl md:text-2xl text-white text-center py-1.5 leading-relaxed">
             "{state.currentQuestion?.questionText}"
           </h2>
 
-          {/* 3. Answers with Big One-Tap Reveal Buttons */}
-          <div className="mt-4 space-y-2.5">
+          {/* 3. Answers Cards - Ergonomic Touch-Friendly for Phone Thumb */}
+          <div className="mt-4 space-y-3">
             {state.currentQuestion?.answers.map((answer, index) => {
               const isRevealed = Boolean(state.revealedAnswers[index]);
               return (
                 <div
                   key={index}
                   onClick={() => handleRevealAnswer(index)}
-                  className={`cursor-pointer flex items-center justify-between rounded-2xl border-2 p-3 transition-all ${
+                  className={`cursor-pointer flex items-center justify-between rounded-2xl border-2 p-3 sm:p-4 min-h-[64px] active:scale-[0.99] transition-all select-none ${
                     isRevealed
-                      ? 'border-emerald-400 bg-emerald-950/60 shadow-[0_0_15px_rgba(16,185,129,0.3)]'
-                      : 'border-slate-700 bg-slate-900 hover:border-amber-400/50'
+                      ? 'border-emerald-400/90 bg-emerald-950/70 shadow-[0_0_20px_rgba(16,185,129,0.35)]'
+                      : 'border-slate-700/80 bg-slate-900/95 hover:border-amber-400/60 hover:bg-slate-800/90 shadow-md'
                   }`}
                 >
-                  <div className="flex items-center gap-3 overflow-hidden">
-                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-amber-500 font-display font-black text-slate-950 text-base">
+                  {/* Left: Slot Number & Answer text & Point value */}
+                  <div className="flex items-center gap-3 sm:gap-4 overflow-hidden pr-1">
+                    <span
+                      className={`flex h-9 w-9 sm:h-11 sm:w-11 shrink-0 items-center justify-center rounded-xl font-display font-black text-base sm:text-xl shadow ${
+                        isRevealed
+                          ? 'bg-emerald-400 text-slate-950'
+                          : 'bg-amber-400 text-slate-950'
+                      }`}
+                    >
                       {index + 1}
                     </span>
-                    <div>
-                      <span className="font-bold text-base md:text-lg text-white block">
+
+                    <div className="flex flex-col">
+                      <span className="font-display font-black text-base sm:text-xl text-white block truncate leading-tight">
                         {answer.text}
                       </span>
-                      <span className="text-xs text-amber-300 font-semibold">
-                        {answer.points} نقطة
+                      <span className="text-xs sm:text-sm text-amber-300 font-extrabold flex items-center gap-1 mt-0.5">
+                        <span>{answer.points} نقطة</span>
+                        {isRevealed && (
+                          <span className="text-[10px] text-emerald-300 font-bold bg-emerald-900/60 px-1.5 py-0.2 rounded">
+                            مكشوف
+                          </span>
+                        )}
                       </span>
                     </div>
                   </div>
 
-                  <span
-                    className={`rounded-xl px-4 py-2 font-display font-black text-xs md:text-sm shadow transition-all ${
+                  {/* Right: Big Touch Button for Thumb */}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRevealAnswer(index);
+                    }}
+                    className={`shrink-0 rounded-xl px-3.5 sm:px-5 py-2.5 sm:py-3 font-display font-black text-xs sm:text-sm shadow-md transition-all active:scale-95 ${
                       isRevealed
-                        ? 'bg-emerald-500 text-slate-950'
-                        : 'bg-slate-800 text-slate-200 hover:bg-slate-700'
+                        ? 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
+                        : 'bg-gradient-to-r from-amber-500 to-yellow-500 text-slate-950 hover:brightness-110 shadow-[0_0_15px_rgba(251,191,36,0.4)]'
                     }`}
                   >
                     {isRevealed ? '✓ مكشوف على الشاشة' : 'اكشف الجواب 🔔'}
-                  </span>
+                  </button>
                 </div>
               );
             })}
           </div>
         </div>
 
-        {/* 4. Giant Strike Button & Steal Actions */}
+        {/* 4. Giant Strike Button & Steal Actions (Touch-Friendly) */}
         <div className="rounded-3xl border border-slate-800 bg-slate-900/90 p-4 space-y-3">
           {/* Big Red Strike Button */}
           <div className="flex items-center gap-2">
             <button
               onClick={handleStrike}
-              className="flex-1 flex items-center justify-center gap-3 rounded-2xl border-3 border-red-500 bg-gradient-to-b from-red-600 to-red-800 py-4 px-6 font-display font-black text-xl text-white shadow-[0_0_30px_rgba(239,68,68,0.5)] active:scale-95 hover:brightness-110 transition-all"
+              className="flex-1 flex items-center justify-center gap-3 rounded-2xl border-3 border-red-500 bg-gradient-to-b from-red-600 to-red-800 min-h-[64px] py-3.5 px-6 font-display font-black text-xl text-white shadow-[0_0_35px_rgba(239,68,68,0.55)] active:scale-95 hover:brightness-110 transition-all"
             >
-              <span className="text-3xl">❌</span>
+              <span className="text-3xl leading-none">❌</span>
               <span>تسجيل خطأ ({state.strikes} من 3)</span>
             </button>
             {state.strikes > 0 && (
               <button
                 onClick={handleResetStrikes}
-                className="shrink-0 rounded-2xl border border-slate-700 bg-slate-800 px-4 py-4 text-xs font-bold text-slate-300 hover:bg-slate-700"
+                className="shrink-0 min-h-[64px] rounded-2xl border border-slate-700 bg-slate-800 px-5 text-xs font-bold text-slate-300 hover:bg-slate-700 active:scale-95 transition-all"
               >
                 تصفير 0
               </button>

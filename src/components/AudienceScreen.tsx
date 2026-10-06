@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { GameState } from '../types/game';
 import { FlipCard } from './FlipCard';
 import { StrikesIndicator, StrikeOverlay } from './StrikesIndicator';
@@ -7,6 +7,7 @@ import { Confetti } from './Confetti';
 import { FeudLogo } from './FeudLogo';
 import { IbnTaymiyyahLogo } from './IbnTaymiyyahLogo';
 import { GrandWinnerModal } from './GrandWinnerModal';
+import { AnimatedCounter } from './AnimatedCounter';
 
 interface AudienceScreenProps {
   state: GameState;
@@ -33,6 +34,37 @@ export function AudienceScreen({
   const isGameOver = state.phase === 'GAME_OVER';
   const [isModalDismissed, setIsModalDismissed] = useState(false);
 
+  // Interactive Lighting & Strike Flash Hooks
+  const [showStrikeFlash, setShowStrikeFlash] = useState(false);
+  const [showCorrectFlash, setShowCorrectFlash] = useState(false);
+  const prevStrikesRef = useRef(state.strikes);
+  const prevRevealedCountRef = useRef(
+    state.revealedAnswers ? state.revealedAnswers.filter(Boolean).length : 0
+  );
+
+  // Detect new strikes to trigger dramatic screen shake & studio red strobe
+  useEffect(() => {
+    if (state.strikes > prevStrikesRef.current && state.strikes > 0) {
+      setShowStrikeFlash(true);
+      const timer = setTimeout(() => setShowStrikeFlash(false), 1100);
+      return () => clearTimeout(timer);
+    }
+    prevStrikesRef.current = state.strikes;
+  }, [state.strikes]);
+
+  // Detect newly revealed answers to trigger interactive golden stage pulse
+  useEffect(() => {
+    const revealedCount = state.revealedAnswers
+      ? state.revealedAnswers.filter(Boolean).length
+      : 0;
+    if (revealedCount > prevRevealedCountRef.current) {
+      setShowCorrectFlash(true);
+      const timer = setTimeout(() => setShowCorrectFlash(false), 850);
+      return () => clearTimeout(timer);
+    }
+    prevRevealedCountRef.current = revealedCount;
+  }, [state.revealedAnswers]);
+
   // Reset modal dismissed state if phase changes
   useEffect(() => {
     if (state.phase !== 'GAME_OVER') {
@@ -53,9 +85,25 @@ export function AudienceScreen({
   };
 
   return (
-    <div className="relative min-h-screen w-full feud-stage-bg flex flex-col justify-between overflow-x-hidden p-3 md:p-6 select-none">
-      <MarqueeArch />
-      <StrikeOverlay count={state.strikeOverlayCount} active={state.strikeOverlayActive} />
+    <div
+      className={`relative min-h-screen w-full feud-stage-bg flex flex-col justify-between overflow-x-hidden p-3 md:p-6 select-none transition-all ${
+        showStrikeFlash ? 'animate-screen-shake' : ''
+      }`}
+    >
+      {/* Interactive Stage Lighting Architecture */}
+      <MarqueeArch isCorrectFlash={showCorrectFlash} isStrikeFlash={showStrikeFlash} />
+
+      {/* Dramatic Instantaneous Red Studio Strobe on Strike */}
+      {showStrikeFlash && (
+        <div className="pointer-events-none fixed inset-0 z-40 bg-red-600/40 animate-red-strobe" />
+      )}
+
+      {/* Giant Screen Strike Overlay */}
+      <StrikeOverlay
+        count={state.strikes || state.strikeOverlayCount || 1}
+        active={showStrikeFlash || state.strikeOverlayActive}
+      />
+
       <Confetti active={isGameOver} />
 
       {/* Top Header: Feud Logo in center/right + Mosque Logo on the left */}
@@ -68,9 +116,13 @@ export function AudienceScreen({
         {/* Center: Round Badge & Fullscreen Button */}
         <div className="flex items-center gap-2">
           <div className="hidden sm:flex items-center gap-2 rounded-2xl border-2 border-amber-400/80 bg-slate-950/90 px-4 py-2 shadow-[0_0_25px_rgba(251,191,36,0.35)]">
-            <span className={`font-display font-black text-xs md:text-sm px-2.5 py-0.5 rounded-md ${
-              state.roundMultiplier > 1 ? 'bg-amber-500 text-slate-950 animate-pulse' : 'text-amber-300'
-            }`}>
+            <span
+              className={`font-display font-black text-xs md:text-sm px-2.5 py-0.5 rounded-md ${
+                state.roundMultiplier > 1
+                  ? 'bg-amber-500 text-slate-950 animate-pulse'
+                  : 'text-amber-300'
+              }`}
+            >
               {roundMultiplierBadge()}
             </span>
           </div>
@@ -88,7 +140,11 @@ export function AudienceScreen({
           {onToggleFullscreen && (
             <button
               onClick={onToggleFullscreen}
-              title={isFullscreen ? 'الخروج من ملء الشاشة' : 'تكبير الشاشة بالكامل (إخفاء سيرش جوجل وأشرطة المتصفح)'}
+              title={
+                isFullscreen
+                  ? 'الخروج من ملء الشاشة'
+                  : 'تكبير الشاشة بالكامل (إخفاء سيرش جوجل وأشرطة المتصفح)'
+              }
               className="flex items-center gap-1.5 rounded-2xl border-2 border-amber-400/80 bg-slate-950/90 hover:bg-slate-900 px-3.5 py-2 text-xs font-bold text-amber-300 shadow-[0_0_20px_rgba(251,191,36,0.3)] active:scale-95 transition-all"
             >
               <span>{isFullscreen ? '🗗' : '⛶'}</span>
@@ -109,7 +165,7 @@ export function AudienceScreen({
           {/* Team A Podium (Right side in RTL) */}
           <div className="lg:col-span-3 flex flex-col items-center">
             <div
-              className={`w-full rounded-3xl border-3 p-4 md:p-5 transition-all duration-300 ${
+              className={`w-full rounded-3xl border-3 p-4 md:p-6 transition-all duration-300 ${
                 state.activeTeam === 'A'
                   ? 'border-amber-400 bg-gradient-to-b from-blue-900 to-blue-950 shadow-[0_0_40px_rgba(251,191,36,0.6)] ring-4 ring-amber-400/30 scale-[1.02]'
                   : 'border-blue-700/50 bg-slate-950/90'
@@ -117,8 +173,8 @@ export function AudienceScreen({
             >
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2 truncate">
-                  <span className="flex h-3.5 w-3.5 rounded-full bg-blue-400 shadow-[0_0_10px_#60a5fa]" />
-                  <span className="font-display font-black text-lg md:text-2xl text-white truncate">
+                  <span className="flex h-4 w-4 rounded-full bg-blue-400 shadow-[0_0_12px_#60a5fa]" />
+                  <span className="font-display font-black text-xl md:text-2xl text-white truncate">
                     {state.teamA.name}
                   </span>
                 </div>
@@ -129,28 +185,32 @@ export function AudienceScreen({
                 )}
               </div>
 
-              {/* Score Number Display */}
-              <div className="flex h-20 md:h-24 items-center justify-center rounded-2xl border-2 border-amber-400/80 bg-slate-950 shadow-[inset_0_3px_12px_rgba(0,0,0,0.9)]">
-                <span className="font-display font-black text-4xl md:text-6xl text-gold-gradient tabular-nums">
-                  {state.teamA.score}
-                </span>
+              {/* Score Number Display with Animated Counter */}
+              <div className="flex h-20 md:h-26 items-center justify-center rounded-2xl border-2 border-amber-400/80 bg-slate-950 shadow-[inset_0_3px_12px_rgba(0,0,0,0.9)]">
+                <AnimatedCounter
+                  value={state.teamA.score}
+                  className="font-display font-black text-5xl md:text-7xl text-gold-gradient"
+                />
               </div>
             </div>
           </div>
 
           {/* Central Main Stage: Giant Bank Score + The Central Answers Box */}
-          <div className="lg:col-span-6 flex flex-col items-center gap-3">
+          <div className="lg:col-span-6 flex flex-col items-center gap-3 sm:gap-4">
             {/* Giant Glowing "بنك نقاط الجولة" directly on top of the board */}
-            <div className="relative rounded-3xl border-4 border-amber-400 bg-gradient-to-b from-amber-500 via-amber-600 to-amber-800 p-1 shadow-[0_0_50px_rgba(245,158,11,0.7)]">
-              <div className="rounded-[22px] bg-slate-950 px-8 py-3 md:px-12 md:py-4 text-center">
+            <div className="relative rounded-3xl border-4 border-amber-400 bg-gradient-to-b from-amber-500 via-amber-600 to-amber-800 p-1 shadow-[0_0_55px_rgba(245,158,11,0.7)]">
+              <div className="rounded-[22px] bg-slate-950 px-8 py-3.5 md:px-14 md:py-4 text-center">
                 <span className="block text-xs md:text-sm font-black text-amber-300 uppercase tracking-widest">
                   بنك نقاط الجولة
                 </span>
-                <span className="font-display font-black text-5xl md:text-7xl text-gold-gradient tabular-nums">
-                  {state.roundBank}
-                </span>
+                <div className="flex items-center justify-center">
+                  <AnimatedCounter
+                    value={state.roundBank}
+                    className="font-display font-black text-6xl md:text-8xl text-gold-gradient"
+                  />
+                </div>
                 {state.roundMultiplier > 1 && (
-                  <span className="mt-1 inline-block rounded-md bg-amber-400/20 px-2.5 py-0.5 text-xs font-bold text-amber-300">
+                  <span className="mt-1 inline-block rounded-md bg-amber-400/20 px-3 py-0.5 text-xs font-black text-amber-300 border border-amber-400/40 animate-pulse">
                     مضاعف ×{state.roundMultiplier}
                   </span>
                 )}
@@ -169,9 +229,9 @@ export function AudienceScreen({
               </div>
             )}
 
-            {/* The Big Center Box with closed numbered rectangles (1, 2, 3...) */}
-            <div className="w-full rounded-3xl border-4 border-amber-400/90 bg-gradient-to-b from-blue-950 via-slate-950 to-blue-950 p-3 sm:p-4 md:p-5 shadow-[0_0_60px_rgba(30,58,138,0.9)]">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 md:gap-3.5">
+            {/* The Big Center Box with 3D Slat Flip cards */}
+            <div className="w-full rounded-3xl border-4 border-amber-400/90 bg-gradient-to-b from-blue-950 via-slate-950 to-blue-950 p-3 sm:p-5 shadow-[0_0_65px_rgba(30,58,138,0.9)]">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
                 {state.currentQuestion?.answers.map((answer, index) => (
                   <FlipCard
                     key={index}
@@ -188,7 +248,7 @@ export function AudienceScreen({
           {/* Team B Podium (Left side in RTL) */}
           <div className="lg:col-span-3 flex flex-col items-center">
             <div
-              className={`w-full rounded-3xl border-3 p-4 md:p-5 transition-all duration-300 ${
+              className={`w-full rounded-3xl border-3 p-4 md:p-6 transition-all duration-300 ${
                 state.activeTeam === 'B'
                   ? 'border-amber-400 bg-gradient-to-b from-blue-900 to-blue-950 shadow-[0_0_40px_rgba(251,191,36,0.6)] ring-4 ring-amber-400/30 scale-[1.02]'
                   : 'border-blue-700/50 bg-slate-950/90'
@@ -196,8 +256,8 @@ export function AudienceScreen({
             >
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2 truncate">
-                  <span className="flex h-3.5 w-3.5 rounded-full bg-indigo-400 shadow-[0_0_10px_#818cf8]" />
-                  <span className="font-display font-black text-lg md:text-2xl text-white truncate">
+                  <span className="flex h-4 w-4 rounded-full bg-indigo-400 shadow-[0_0_12px_#818cf8]" />
+                  <span className="font-display font-black text-xl md:text-2xl text-white truncate">
                     {state.teamB.name}
                   </span>
                 </div>
@@ -208,11 +268,12 @@ export function AudienceScreen({
                 )}
               </div>
 
-              {/* Score Number Display */}
-              <div className="flex h-20 md:h-24 items-center justify-center rounded-2xl border-2 border-amber-400/80 bg-slate-950 shadow-[inset_0_3px_12px_rgba(0,0,0,0.9)]">
-                <span className="font-display font-black text-4xl md:text-6xl text-gold-gradient tabular-nums">
-                  {state.teamB.score}
-                </span>
+              {/* Score Number Display with Animated Counter */}
+              <div className="flex h-20 md:h-26 items-center justify-center rounded-2xl border-2 border-amber-400/80 bg-slate-950 shadow-[inset_0_3px_12px_rgba(0,0,0,0.9)]">
+                <AnimatedCounter
+                  value={state.teamB.score}
+                  className="font-display font-black text-5xl md:text-7xl text-gold-gradient"
+                />
               </div>
             </div>
           </div>

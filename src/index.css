@@ -14,9 +14,13 @@
   font-family: 'Rubik', 'Changa', system-ui, sans-serif;
 }
 
-/* 3D Card Flip styles */
+/* 3D Card Flip styles with Hardware Acceleration */
 .perspective-1000 {
   perspective: 1000px;
+}
+
+.perspective-1200 {
+  perspective: 1200px;
 }
 
 .transform-style-preserve-3d {
@@ -30,6 +34,56 @@
 
 .rotate-y-180 {
   transform: rotateY(180deg);
+}
+
+.rotate-x-180 {
+  transform: rotateX(180deg);
+}
+
+.rotate-x-0 {
+  transform: rotateX(0deg);
+}
+
+/* Golden flash sheen on answer reveal */
+@keyframes goldSheen {
+  0% {
+    transform: translateX(-120%) skewX(-25deg);
+    opacity: 0;
+  }
+  25% {
+    opacity: 0.85;
+  }
+  100% {
+    transform: translateX(220%) skewX(-25deg);
+    opacity: 0;
+  }
+}
+
+.animate-gold-sheen {
+  animation: goldSheen 0.75s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Instantaneous studio red strobe flash on strike */
+@keyframes redStrobe {
+  0% { opacity: 0.75; }
+  100% { opacity: 0; }
+}
+
+.animate-red-strobe {
+  animation: redStrobe 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Screen shake for dramatic TV strike */
+@keyframes screenShake {
+  0%, 100% { transform: translate(0, 0); }
+  15% { transform: translate(-10px, 8px); }
+  30% { transform: translate(10px, -8px); }
+  50% { transform: translate(-7px, 5px); }
+  75% { transform: translate(6px, -4px); }
+}
+
+.animate-screen-shake {
+  animation: screenShake 0.45s ease-out;
 }
 
 /* Marquee bulb glowing animations - Optimized for 60fps without heavy drop-shadow filters */
