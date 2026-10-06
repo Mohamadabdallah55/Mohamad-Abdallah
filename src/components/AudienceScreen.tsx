@@ -42,11 +42,11 @@ export function AudienceScreen({
     state.revealedAnswers ? state.revealedAnswers.filter(Boolean).length : 0
   );
 
-  // Detect new strikes to trigger dramatic screen shake & studio red strobe
+  // Detect new strikes to trigger instant GPU strike overlay (480ms max)
   useEffect(() => {
     if (state.strikes > prevStrikesRef.current && state.strikes > 0) {
       setShowStrikeFlash(true);
-      const timer = setTimeout(() => setShowStrikeFlash(false), 1100);
+      const timer = setTimeout(() => setShowStrikeFlash(false), 480);
       return () => clearTimeout(timer);
     }
     prevStrikesRef.current = state.strikes;
@@ -59,7 +59,7 @@ export function AudienceScreen({
       : 0;
     if (revealedCount > prevRevealedCountRef.current) {
       setShowCorrectFlash(true);
-      const timer = setTimeout(() => setShowCorrectFlash(false), 850);
+      const timer = setTimeout(() => setShowCorrectFlash(false), 600);
       return () => clearTimeout(timer);
     }
     prevRevealedCountRef.current = revealedCount;
@@ -85,23 +85,14 @@ export function AudienceScreen({
   };
 
   return (
-    <div
-      className={`relative min-h-screen w-full feud-stage-bg flex flex-col justify-between overflow-x-hidden p-3 md:p-6 select-none transition-all ${
-        showStrikeFlash ? 'animate-screen-shake' : ''
-      }`}
-    >
+    <div className="relative min-h-screen w-full feud-stage-bg flex flex-col justify-between overflow-x-hidden p-3 md:p-6 select-none">
       {/* Interactive Stage Lighting Architecture */}
       <MarqueeArch isCorrectFlash={showCorrectFlash} isStrikeFlash={showStrikeFlash} />
 
-      {/* Dramatic Instantaneous Red Studio Strobe on Strike */}
-      {showStrikeFlash && (
-        <div className="pointer-events-none fixed inset-0 z-40 bg-red-600/40 animate-red-strobe" />
-      )}
-
-      {/* Giant Screen Strike Overlay */}
+      {/* Giant Screen Strike Overlay (Instant, Hardware-Accelerated) */}
       <StrikeOverlay
-        count={state.strikes || state.strikeOverlayCount || 1}
-        active={showStrikeFlash || state.strikeOverlayActive}
+        count={state.strikes || 1}
+        active={showStrikeFlash}
       />
 
       <Confetti active={isGameOver} />

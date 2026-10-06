@@ -75,9 +75,9 @@ export function HostController({
     }
   };
 
-  // Trigger strike
+  // Trigger strike - Instant state update with zero timeout lag
   const handleStrike = () => {
-    triggerHaptic([120, 60, 120]);
+    triggerHaptic([100, 50, 100]);
 
     updateState((prev) => {
       const nextStrikes = Math.min(3, prev.strikes + 1);
@@ -86,21 +86,12 @@ export function HostController({
       return {
         ...prev,
         strikes: nextStrikes,
-        strikeOverlayActive: true,
-        strikeOverlayCount: nextStrikes,
         phase: enterSteal ? 'STEAL' : prev.phase,
         stealTeam: enterSteal ? (prev.activeTeam === 'A' ? 'B' : 'A') : prev.stealTeam,
       };
     });
 
     triggerSound('strike');
-
-    setTimeout(() => {
-      updateState((prev) => ({
-        ...prev,
-        strikeOverlayActive: false,
-      }));
-    }, 2200);
   };
 
   // Reset strikes
@@ -401,8 +392,8 @@ export function HostController({
                       {index + 1}
                     </span>
 
-                    <div className="flex flex-col">
-                      <span className="font-display font-black text-base sm:text-xl text-white block truncate leading-tight">
+                    <div className="flex flex-col min-w-0">
+                      <span className="font-display font-black text-base sm:text-xl text-white block break-words leading-tight">
                         {answer.text}
                       </span>
                       <span className="text-xs sm:text-sm text-amber-300 font-extrabold flex items-center gap-1 mt-0.5">

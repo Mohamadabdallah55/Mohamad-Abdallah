@@ -63,27 +63,39 @@
   animation: goldSheen 0.75s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
-/* Instantaneous studio red strobe flash on strike */
-@keyframes redStrobe {
-  0% { opacity: 0.75; }
+/* Instantaneous studio red flash on strike (350ms, pure opacity) */
+@keyframes redFlashFast {
+  0% { opacity: 0.65; }
   100% { opacity: 0; }
 }
 
-.animate-red-strobe {
-  animation: redStrobe 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+.animate-red-flash-fast {
+  animation: redFlashFast 0.35s ease-out forwards;
+  will-change: opacity;
 }
 
-/* Screen shake for dramatic TV strike */
-@keyframes screenShake {
-  0%, 100% { transform: translate(0, 0); }
-  15% { transform: translate(-10px, 8px); }
-  30% { transform: translate(10px, -8px); }
-  50% { transform: translate(-7px, 5px); }
-  75% { transform: translate(6px, -4px); }
+/* Fast strike pop - Hardware Accelerated (scale & opacity only, 380ms) */
+@keyframes fastStrikePop {
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  35% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+  65% {
+    transform: scale(0.96);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
-.animate-screen-shake {
-  animation: screenShake 0.45s ease-out;
+.animate-fast-strike {
+  animation: fastStrikePop 0.38s cubic-bezier(0.18, 0.9, 0.3, 1) forwards;
+  will-change: transform, opacity;
 }
 
 /* Marquee bulb glowing animations - Optimized for 60fps without heavy drop-shadow filters */
