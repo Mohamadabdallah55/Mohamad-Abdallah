@@ -40,6 +40,17 @@ export function getSyncServerUrl(): string {
   return window.location.origin;
 }
 
+export async function checkSyncServerConnection(roomId: string): Promise<boolean> {
+  const serverBase = getSyncServerUrl();
+  if (!serverBase) return false;
+  try {
+    const response = await fetch(`${serverBase}/api/sync/state?room=${encodeURIComponent(roomId)}`, { signal: AbortSignal.timeout(2500) });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 export function saveGameStateToStorage(state: GameState) {
   try {
     localStorage.setItem(privateStateKey(state.roomId || 'FEUD'), JSON.stringify(state));
@@ -209,7 +220,8 @@ export async function fetchRemoteState(roomId: string = 'FEUD'): Promise<GameSta
 export function subscribeToSync(
   onMessage: (msg: GameSyncMessage) => void,
   roomId: string = 'FEUD',
-  role: 'host' | 'audience' = 'audience'
+  role: 'host' | 'audience' = 'audience',
+  onConnectionStatusChange?: (connected: boolean) => void
 ): () => void {
   // 1. BroadcastChannel Listener
   const channelListener = (event: MessageEvent) => {
@@ -259,6 +271,11 @@ export function subscribeToSync(
       let consecutiveErrors = 0;
       eventSource = new EventSource(`${serverBase}/api/sync/events?room=${encodeURIComponent(roomId)}&role=${role}`);
 
+      eventSource.onopen = () => {
+        consecutiveErrors = 0;
+        onConnectionStatusChange?.(true);
+      };
+
       eventSource.onmessage = (event) => {
         consecutiveErrors = 0;
         try {
@@ -275,6 +292,7 @@ export function subscribeToSync(
 
       eventSource.onerror = () => {
         consecutiveErrors++;
+        onConnectionStatusChange?.(false);
         // If server fails or doesn't support SSE (e.g. GitHub Pages 404),
         // disconnect immediately to prevent endless reconnect loops and browser lag
         if (consecutiveErrors >= 2) {

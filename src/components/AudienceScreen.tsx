@@ -3,28 +3,32 @@ import { GameState } from '../types/game';
 import { AnimatedCounter } from './AnimatedCounter';
 import { GrandWinnerModal } from './GrandWinnerModal';
 import { getTimerRemaining } from '../utils/gameEngine';
-import { playRevealAccent } from '../utils/audio';
 import { StrikeOverlay } from './StrikesIndicator';
 
 interface AudienceScreenProps {
   state: GameState;
   onOpenControllerTab?: () => void;
+  showReturnToHost?: boolean;
   onRestartGame?: () => void;
   onDismissGameOver?: () => void;
   onToggleFullscreen?: () => void;
   isFullscreen?: boolean;
   p2pConnected?: boolean;
+  serverConnected?: boolean;
   p2pPeerCount?: number;
   roomId?: string;
 }
 
 export function AudienceScreen({
   state,
+  onOpenControllerTab,
+  showReturnToHost = false,
   onRestartGame,
   onDismissGameOver,
   onToggleFullscreen,
   isFullscreen = false,
   p2pConnected = false,
+  serverConnected = false,
   roomId = 'FEUD',
 }: AudienceScreenProps) {
   const [dismissed, setDismissed] = useState(false);
@@ -38,7 +42,6 @@ export function AudienceScreen({
   const [stealEvent, setStealEvent] = useState(false);
   const previousScores = useRef({ A: state.teamA.score, B: state.teamB.score });
   const [scorePulse, setScorePulse] = useState<'A' | 'B' | null>(null);
-  const previousRevealCount = useRef(state.revealedAnswers.filter(Boolean).length);
 
   useEffect(() => {
     if (!state.timerRunning) return;
@@ -58,7 +61,7 @@ export function AudienceScreen({
   }, [state.strikes]);
 
   useEffect(() => {
-    const freshOpening = state.currentRound === 1 && state.phase === 'FACE_OFF' && state.teamA.score === 0 && state.teamB.score === 0;
+    const freshOpening = state.currentRound === 1 && state.phase === 'FACE_OFF' && state.teamA.score === 0 && state.teamB.score === 0 && state.roundBank === 0 && state.strikes === 0 && !state.revealedAnswers.some(Boolean);
     const key = `family_challenge_intro_${state.roomId || roomId}`;
     if (!freshOpening || introStarted.current || sessionStorage.getItem(key)) return;
     introStarted.current = true;
@@ -80,12 +83,6 @@ export function AudienceScreen({
     previousScores.current = { A: state.teamA.score, B: state.teamB.score };
   }, [state.teamA.score, state.teamB.score]);
 
-  useEffect(() => {
-    const count = state.revealedAnswers.filter(Boolean).length;
-    if (count > previousRevealCount.current) playRevealAccent(Math.min(1, state.volume ?? 0.8), Boolean(state.muted));
-    previousRevealCount.current = count;
-  }, [state.revealedAnswers, state.volume, state.muted]);
-
   useEffect(() => { if (state.phase !== 'GAME_OVER') setDismissed(false); }, [state.phase]);
 
   const seconds = getTimerRemaining(state, now);
@@ -104,7 +101,7 @@ export function AudienceScreen({
         <TeamPod team={state.teamA} active={state.activeTeam === 'A'} struck={strikeEvent > 0 && strikeTeam === 'A'} pulsing={scorePulse === 'A'} side="a" />
 
         <div className="arena-brand" aria-label="العلامة البصرية للمسابقة">
-          <img className="arena-logo" src={state.brandLogoDataUrl || '/family-challenge-logo.svg'} alt="FAMILY CHALLENGE" />
+          <img className="arena-logo" src={state.brandLogoDataUrl || '/family-challenge-logo-small.png'} srcSet={state.brandLogoDataUrl ? undefined : '/family-challenge-logo-v2.png 2x'} alt="FAMILY CHALLENGE" />
           <span className="brand-copy"><small>FAMILY CHALLENGE</small><strong>تحدّي العائلة</strong></span>
         </div>
 
@@ -148,13 +145,14 @@ export function AudienceScreen({
           </div>
 
           <div className="connection-status" title={`رمز الغرفة ${roomId}`}>
-            <i className={p2pConnected ? 'connection-live' : ''} />
-            <span>{p2pConnected ? 'مباشر' : 'بانتظار الربط'}</span>
+            <i className={p2pConnected || serverConnected ? 'connection-live' : ''} />
+            <span>{p2pConnected ? 'مباشر · P2P' : serverConnected ? 'مباشر · الخادم' : 'بانتظار الربط'}</span>
           </div>
 
           <button className="arena-fullscreen" type="button" onClick={onToggleFullscreen} aria-label={isFullscreen ? 'الخروج من ملء الشاشة' : 'ملء الشاشة'} title="ملء الشاشة">
             {isFullscreen ? '⛶' : '⛶'}
           </button>
+          {showReturnToHost && <button className="arena-return-host" type="button" onClick={onOpenControllerTab}>← الرجوع للتحكم</button>}
         </section>
 
         <section className="answer-wall" aria-label="الإجابات">
@@ -187,7 +185,7 @@ export function AudienceScreen({
 function TeamPod({ team, active, struck, pulsing, side }: { team: GameState['teamA']; active: boolean; struck: boolean; pulsing: boolean; side: 'a' | 'b' }) {
   return (
     <section className={`arena-team team-${side}${active ? ' team-active' : ''}${struck ? ' team-struck' : ''}${pulsing ? ' team-score-pulse' : ''}`} aria-label={`الفريق ${team.name}: ${team.score} نقطة`}>
-      <img className="team-shield" src={side === 'a' ? '/assets/shield-cyan.svg' : '/assets/shield-violet.svg'} alt="" aria-hidden="true" />
+      <img className="team-shield" src={side === 'a' ? '/assets/shields/team-cyan.png' : '/assets/shields/team-violet.png'} srcSet={side === 'a' ? '/assets/shields/team-cyan-hires.png 2x' : '/assets/shields/team-violet-hires.png 2x'} alt="" aria-hidden="true" />
       <div className="team-identity"><small>{active ? 'الدور الآن' : 'الفريق'}</small><strong>{team.name}</strong></div>
       <div className="team-total"><AnimatedCounter value={team.score} duration={850} /><small>نقطة</small></div>
     </section>
@@ -197,11 +195,11 @@ function TeamPod({ team, active, struck, pulsing, side }: { team: GameState['tea
 function ShowIntro({ teamA, teamB, onSkip }: { teamA: string; teamB: string; onSkip: () => void }) {
   return <div className="show-intro" role="dialog" aria-label="مقدمة FAMILY CHALLENGE">
     <div className="intro-light intro-light-a" /><div className="intro-light intro-light-b" />
-    <img src="/family-challenge-logo.svg" alt="FAMILY CHALLENGE" className="intro-logo" />
+    <img src="/family-challenge-logo-v2.png" alt="FAMILY CHALLENGE" className="intro-logo" />
     <div className="intro-teams" dir="rtl">
-      <div><img src="/assets/shield-cyan.svg" alt="" /><b>{teamA}</b></div>
+      <div><img src="/assets/shields/team-cyan.png" srcSet="/assets/shields/team-cyan-hires.png 2x" alt="" /><b>{teamA}</b></div>
       <span>ضد</span>
-      <div><img src="/assets/shield-violet.svg" alt="" /><b>{teamB}</b></div>
+      <div><img src="/assets/shields/team-violet.png" srcSet="/assets/shields/team-violet-hires.png 2x" alt="" /><b>{teamB}</b></div>
     </div>
     <p>استعدّوا للمواجهة</p><div className="intro-progress"><i /></div>
     <button type="button" onClick={onSkip}>تخطي المقدمة</button>

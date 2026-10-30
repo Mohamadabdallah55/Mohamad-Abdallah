@@ -19,7 +19,7 @@ export function GrandWinnerModal({ winner, teamA, teamB, onRestart, onClose }: G
       <div className="winner-halo" aria-hidden="true" />
       <section className="winner-card">
         <span className="winner-eyebrow">أُسدل الستار · أربع جولات مكتملة</span>
-        <div className="winner-emblem" aria-hidden="true">{isTie ? <img src="/family-challenge-logo.svg" alt="" /> : <img src={winner === 'A' ? '/assets/shield-cyan.svg' : '/assets/shield-violet.svg'} alt="" />}</div>
+        <div className="winner-emblem" aria-hidden="true">{isTie ? <img src="/family-challenge-logo-v2.png" alt="" /> : <img src={winner === 'A' ? '/assets/shields/team-cyan-hires.png' : '/assets/shields/team-violet-hires.png'} alt="" />}</div>
         <h2 id="winner-title">{isTie ? 'تعادل الفريقان' : 'الفائز في ساحة المنافسة'}</h2>
         <p className="winner-name">{isTie ? 'نتيجة متساوية' : winningTeam.name}</p>
         <p className="winner-caption">{isTie ? 'المباراة انتهت بالتعادل. يمكن للمقدم حسم النتيجة يدويًا.' : 'أداءٌ جمع المعرفة وسرعة البديهة حتى آخر نقطة.'}</p>

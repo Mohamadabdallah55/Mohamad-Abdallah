@@ -2,18 +2,18 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { GameState, GameSyncMessage } from './types/game';
 import { createInitialGameState } from './utils/gameDefaults';
 import { normalizeLoadedState } from './utils/gameEngine';
-import { INITIAL_QUESTIONS } from './data/questions';
-import { QUESTION_BATCH_01 } from './data/questionBatch01';
+import { QUESTION_BANK } from './data/questionBank';
 import {
   broadcastGameState,
   broadcastSound,
+  checkSyncServerConnection,
   fetchRemoteState,
   loadAudienceStateFromStorage,
   loadGameStateFromStorage,
   subscribeToSync,
   toAudienceState,
 } from './utils/sync';
-import { playSound } from './utils/audio';
+import { playSound, setAudioControls } from './utils/audio';
 import { initP2PSync } from './utils/p2pSync';
 import { AudienceScreen } from './components/AudienceScreen';
 import { HostController } from './components/HostController';
@@ -45,6 +45,7 @@ export default function App() {
 
   const [p2pConnected, setP2pConnected] = useState<boolean>(false);
   const [p2pPeerCount, setP2pPeerCount] = useState<number>(0);
+  const [serverConnected, setServerConnected] = useState(false);
 
   const [screenMode, setScreenMode] = useState<'audience' | 'host'>(() => {
     if (typeof window !== 'undefined') {
@@ -56,6 +57,7 @@ export default function App() {
     }
     return 'audience';
   });
+  const [returnToHostAvailable, setReturnToHostAvailable] = useState(false);
 
   // Listen to hash changes (e.g. user toggles #remote in URL)
   useEffect(() => {
@@ -108,9 +110,11 @@ export default function App() {
 
   const historyRef = useRef<GameState[]>([]);
 
+  useEffect(() => { setAudioControls(gameState.volume ?? 0.8, Boolean(gameState.muted)); }, [gameState.volume, gameState.muted]);
+
   const hydrateQuestion = useCallback((incoming: GameState): GameState => {
     const localQuestion = gameStateRef.current?.currentQuestion;
-    const source = [localQuestion, ...QUESTION_BATCH_01, ...INITIAL_QUESTIONS].find((q) => q?.id === incoming.currentQuestion?.id);
+    const source = [localQuestion, ...QUESTION_BANK].find((q) => q?.id === incoming.currentQuestion?.id);
     if (!source || screenMode !== 'host') return normalizeLoadedState(incoming);
     return normalizeLoadedState({ ...incoming, currentQuestion: source });
   }, [screenMode]);
@@ -149,12 +153,20 @@ export default function App() {
       } else if (msg.type === 'TRIGGER_SOUND') {
         playSound(msg.sound);
       }
-    }, roomId, 'audience');
+    }, roomId, 'audience', setServerConnected);
 
     return () => {
       unsubscribe();
     };
   }, [roomId, hydrateQuestion, screenMode]);
+
+  useEffect(() => {
+    let alive = true;
+    const probe = () => { void checkSyncServerConnection(roomId).then((connected) => { if (alive) setServerConnected(connected); }); };
+    probe();
+    const interval = window.setInterval(probe, 5000);
+    return () => { alive = false; window.clearInterval(interval); };
+  }, [roomId]);
 
   // WebRTC P2P Serverless Direct Sync (Zero-server sync for GitHub Pages and Phone ➔ TV)
   useEffect(() => {
@@ -189,6 +201,7 @@ export default function App() {
     (updater: (prev: GameState) => GameState) => {
       setGameState((prev) => {
         const next = updater(prev);
+        if (next === prev) return prev;
         if (screenMode === 'host') historyRef.current = [...historyRef.current.slice(-29), prev];
         const withMeta = { ...next, roomId, actionId: (prev.actionId ?? 0) + 1, lastUpdated: Date.now() };
         broadcastGameState(withMeta, roomId);
@@ -303,10 +316,29 @@ export default function App() {
   };
 
   const handleRoomChange = (newRoom: string) => {
-    setRoomId(newRoom);
+    const cleanRoom = newRoom.toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 32);
+    if (!cleanRoom || cleanRoom === roomId) return;
+    let scoped: GameState | null = null;
+    try {
+      const saved = localStorage.getItem(`family_feud_host_private_state:${encodeURIComponent(cleanRoom)}`);
+      scoped = saved ? normalizeLoadedState(JSON.parse(saved) as GameState) : null;
+      sessionStorage.setItem('feud_active_room', cleanRoom);
+    } catch { /* Start a fresh room when stored state cannot be read. */ }
+    const next = scoped ?? { ...createInitialGameState(), roomId: cleanRoom };
+    setGameState(screenMode === 'audience' ? toAudienceState(next) : next);
+    historyRef.current = [];
+    setRoomId(cleanRoom);
     const url = new URL(window.location.href);
-    url.searchParams.set('room', newRoom);
+    url.searchParams.set('room', cleanRoom);
     window.history.replaceState({}, '', url.toString());
+  };
+
+  const returnToHost = () => {
+    try {
+      const saved = localStorage.getItem(`family_feud_host_private_state:${encodeURIComponent(roomId)}`);
+      if (saved) setGameState(normalizeLoadedState(JSON.parse(saved) as GameState));
+    } catch { /* Keep current state if storage is unavailable. */ }
+    setScreenMode('host');
   };
 
   return (
@@ -400,13 +432,15 @@ export default function App() {
       {/* Screen Views */}
       {screenMode === 'audience' ? (
         <AudienceScreen
-          state={gameState}
-          onOpenControllerTab={() => setScreenMode('host')}
+          state={toAudienceState(gameState)}
+          onOpenControllerTab={returnToHost}
+          showReturnToHost={returnToHostAvailable}
           onRestartGame={resetGame}
           onDismissGameOver={dismissGameOver}
           onToggleFullscreen={() => handleToggleFullscreen()}
           isFullscreen={isFullscreen}
           p2pConnected={p2pConnected}
+          serverConnected={serverConnected}
           p2pPeerCount={p2pPeerCount}
           roomId={roomId}
         />
@@ -416,10 +450,12 @@ export default function App() {
           updateState={updateState}
           triggerSound={triggerSound}
           onOpenConnectModal={() => setShowConnectModal(true)}
-          onSwitchToAudience={() => setScreenMode('audience')}
+          onSwitchToAudience={() => { setReturnToHostAvailable(true); setScreenMode('audience'); }}
           p2pConnected={p2pConnected}
+          serverConnected={serverConnected}
           roomId={roomId}
           onUndo={undoLastAction}
+          onRestartGame={resetGame}
           canUndo={historyRef.current.length > 0}
         />
       )}
@@ -430,6 +466,7 @@ export default function App() {
         onClose={() => setShowConnectModal(false)}
         roomId={roomId}
         onRoomChange={handleRoomChange}
+        onOpenAudience={() => { setShowConnectModal(false); setReturnToHostAvailable(true); setScreenMode('audience'); }}
       />
     </div>
   );

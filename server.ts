@@ -1,5 +1,6 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
+import os from 'node:os';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -29,6 +30,13 @@ interface RoomData {
 }
 
 const rooms = new Map<string, RoomData>();
+
+app.get('/api/connect-info', (_req: Request, res: Response) => {
+  const addresses = Object.values(os.networkInterfaces()).flatMap((entries) => entries ?? [])
+    .filter((entry) => entry.family === 'IPv4' && !entry.internal)
+    .map((entry) => entry.address);
+  res.json({ localUrl: addresses.length ? `http://${addresses[0]}:${PORT}` : null });
+});
 
 function getOrCreateRoom(roomId: string = 'MAIN'): RoomData {
   const normalizedId = roomId.toUpperCase().trim() || 'MAIN';

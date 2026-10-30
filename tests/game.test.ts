@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { QUESTION_BATCH_01 } from '../src/data/questionBatch01';
+import { QUESTION_BANK } from '../src/data/questionBank';
 import { createInitialGameState } from '../src/utils/gameDefaults';
 import { awardRound, completeGame, resolveSteal } from '../src/utils/gameEngine';
 import { toAudienceState } from '../src/utils/audienceState';
 import type { GameState } from '../src/types/game';
 
 function makeRoundState(round: number, teamA = 0, teamB = 0): GameState {
-  const question = QUESTION_BATCH_01[0];
+  const question = QUESTION_BANK[0];
   return {
     ...createInitialGameState(),
     teamA: { ...createInitialGameState().teamA, score: teamA },
@@ -22,15 +22,31 @@ function makeRoundState(round: number, teamA = 0, teamB = 0): GameState {
   };
 }
 
-test('the reviewed starter bank has distinct answers and 100 estimated points per question', () => {
-  assert.equal(QUESTION_BATCH_01.length, 25);
-  assert.equal(new Set(QUESTION_BATCH_01.map((question) => question.id)).size, QUESTION_BATCH_01.length);
-  assert.equal(new Set(QUESTION_BATCH_01.map((question) => question.questionText)).size, QUESTION_BATCH_01.length);
-  for (const question of QUESTION_BATCH_01) {
+test('the curated bank contains 200 questions split evenly across five categories', () => {
+  assert.equal(QUESTION_BANK.length, 200);
+  assert.equal(new Set(QUESTION_BANK.map((question) => question.id)).size, QUESTION_BANK.length);
+  assert.equal(new Set(QUESTION_BANK.map((question) => question.questionText)).size, QUESTION_BANK.length);
+  const categories = new Map<string, number>();
+  for (const question of QUESTION_BANK) {
+    categories.set(question.category, (categories.get(question.category) ?? 0) + 1);
     assert.equal(question.pointsSource, 'estimated');
     assert.ok(question.answers.length >= 4 && question.answers.length <= 7);
     assert.equal(question.answers.reduce((sum, answer) => sum + answer.points, 0), 100, question.questionText);
     assert.equal(new Set(question.answers.map((answer) => answer.text.normalize('NFKC').trim().toLocaleLowerCase('ar'))).size, question.answers.length);
+  }
+  assert.deepEqual([...categories.values()].sort((a, b) => a - b), [40, 40, 40, 40, 40]);
+});
+
+test('the question bank avoids near-identical prompt wording', () => {
+  const stopWords = new Set(['من', 'في', 'على', 'عن', 'مع', 'ماذا', 'ما', 'لو', 'لما', 'هل', 'كيف', 'وين', 'أين', 'كل', 'بين', 'وقت', 'أو', 'و']);
+  const tokens = (value: string) => new Set(value.toLocaleLowerCase('ar').replace(/[؟،.!؛:«»]/g, ' ').split(/\s+/).filter((word) => word.length > 2 && !stopWords.has(word)));
+  for (let leftIndex = 0; leftIndex < QUESTION_BANK.length; leftIndex++) {
+    const left = tokens(QUESTION_BANK[leftIndex].questionText);
+    for (let rightIndex = leftIndex + 1; rightIndex < QUESTION_BANK.length; rightIndex++) {
+      const right = tokens(QUESTION_BANK[rightIndex].questionText);
+      const overlap = [...left].filter((word) => right.has(word)).length / new Set([...left, ...right]).size;
+      assert.ok(overlap <= 0.35, `Possible near-duplicate prompts: ${QUESTION_BANK[leftIndex].id} and ${QUESTION_BANK[rightIndex].id}`);
+    }
   }
 });
 
@@ -87,7 +103,7 @@ test('game completion is only possible after the awarded fourth round', () => {
 });
 
 test('audience state exposes only revealed answer text and points', () => {
-  const question = QUESTION_BATCH_01[0];
+  const question = QUESTION_BANK[0];
   const state = { ...makeRoundState(1), currentQuestion: question, revealedAnswers: question.answers.map((_, index) => index === 2) };
   const publicState = toAudienceState(state);
   assert.equal(publicState.currentQuestion?.answers[2].text, question.answers[2].text);

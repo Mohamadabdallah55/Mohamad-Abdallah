@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { GameState, Question } from '../types/game';
-import { QUESTION_BATCH_01 } from '../data/questionBatch01';
+import { QUESTION_BANK } from '../data/questionBank';
 import { getMultiplierForRound, pickNewQuestion } from '../utils/gameDefaults';
 import { AnimatedCounter } from './AnimatedCounter';
 import { awardRound, completeGame, getTimerRemaining, resolveSteal } from '../utils/gameEngine';
@@ -12,8 +12,10 @@ interface HostControllerProps {
   onOpenConnectModal?: () => void;
   onSwitchToAudience?: () => void;
   p2pConnected?: boolean;
+  serverConnected?: boolean;
   roomId?: string;
   onUndo?: () => void;
+  onRestartGame?: () => void;
   canUndo?: boolean;
 }
 
@@ -24,23 +26,33 @@ export function HostController({
   onOpenConnectModal,
   onSwitchToAudience,
   p2pConnected = false,
+  serverConnected = false,
   roomId = 'FEUD',
   onUndo,
+  onRestartGame,
   canUndo = false,
 }: HostControllerProps) {
   const [questionBank, setQuestionBank] = useState<Question[]>(() => {
-    try { const saved = localStorage.getItem('family_feud_questions_v3'); return saved ? JSON.parse(saved) as Question[] : QUESTION_BATCH_01; }
-    catch { return QUESTION_BATCH_01; }
+    try {
+      const saved = localStorage.getItem('family_challenge_questions_v1');
+      if (saved) return JSON.parse(saved) as Question[];
+      const legacy = localStorage.getItem('family_feud_questions_v3');
+      const custom = legacy ? (JSON.parse(legacy) as Question[]).filter((question) => Number(question.id) >= 1_000_000_000_000) : [];
+      return [...QUESTION_BANK, ...custom];
+    } catch { return QUESTION_BANK; }
   });
   const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
   const [bankMessage, setBankMessage] = useState('');
   const importRef = useRef<HTMLInputElement>(null);
   const brandFileRef = useRef<HTMLInputElement>(null);
+  const revealLock = useRef(new Map<number, number>());
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showQuestionsDrawer, setShowQuestionsDrawer] = useState<boolean>(false);
   const [showTeamEditModal, setShowTeamEditModal] = useState<boolean>(false);
   const [showBrandSettings, setShowBrandSettings] = useState(false);
+  const [showRestartConfirm, setShowRestartConfirm] = useState(false);
+  const [showQuickAudio, setShowQuickAudio] = useState(false);
   const [brandMessage, setBrandMessage] = useState('');
   const [showEventLog, setShowEventLog] = useState(false);
   const [eventLog, setEventLog] = useState<Array<{ id: number; label: string; time: string }>>([]);
@@ -80,17 +92,21 @@ export function HostController({
   // Reveal a specific answer
   const handleRevealAnswer = (index: number) => {
     if (!state.currentQuestion || state.phase === 'ROUND_OVER' || state.phase === 'GAME_OVER' || state.phase === 'STEAL') return;
+    const now = Date.now();
+    if (now - (revealLock.current.get(index) ?? 0) < 250) return;
+    revealLock.current.set(index, now);
     const answer = state.currentQuestion.answers[index];
-    const isCurrentlyRevealed = state.revealedAnswers[index];
+    if (!answer) return;
+    const shouldReveal = !state.revealedAnswers[index];
 
-    triggerHaptic(isCurrentlyRevealed ? 35 : 60);
+    triggerHaptic(shouldReveal ? 60 : 35);
 
     updateState((prev) => {
+      if (!prev.currentQuestion || prev.phase === 'ROUND_OVER' || prev.phase === 'GAME_OVER' || prev.phase === 'STEAL') return prev;
+      if (prev.revealedAnswers[index] === shouldReveal) return prev;
       const newRevealed = [...prev.revealedAnswers];
-      newRevealed[index] = !isCurrentlyRevealed;
-
-      const pointsDiff = answer.points * (isCurrentlyRevealed ? -1 : 1);
-      const newBank = Math.max(0, prev.roundBank + pointsDiff);
+      newRevealed[index] = shouldReveal;
+      const newBank = prev.currentQuestion.answers.reduce((sum, item, answerIndex) => sum + (newRevealed[answerIndex] ? item.points : 0), 0);
 
       return {
         ...prev,
@@ -99,9 +115,7 @@ export function HostController({
       };
     });
 
-    if (!isCurrentlyRevealed) {
-      triggerSound('chime');
-    }
+    if (shouldReveal) triggerSound('chime');
   };
 
   // Trigger strike - Instant state update with zero timeout lag
@@ -181,6 +195,7 @@ export function HostController({
     if (state.currentRound >= 4 || state.phase !== 'ROUND_OVER') return;
     triggerHaptic([60, 40, 60]);
     updateState((prev) => {
+      if (prev.phase !== 'ROUND_OVER' || prev.currentRound >= 4) return prev;
       const nextRound = prev.currentRound < 4 ? prev.currentRound + 1 : prev.currentRound;
       const multiplier = getMultiplierForRound(nextRound);
       const nextQ = pickNewQuestion(questionBank, prev.burntQuestionIds) || questionBank[0];
@@ -215,6 +230,10 @@ export function HostController({
 
   // Select question from drawer
   const handleSelectQuestion = (q: Question) => {
+    if (state.phase !== 'FACE_OFF' || state.roundBank !== 0 || state.revealedAnswers.some(Boolean) || state.awardedRound === state.currentRound) {
+      setBankMessage('اختيار السؤال متاح قبل بدء الجولة فقط. أنهِ الجولة الحالية أولًا.');
+      return;
+    }
     updateState((prev) => ({
       ...prev,
       currentQuestion: q,
@@ -239,7 +258,7 @@ export function HostController({
 
   const persistQuestionBank = (next: Question[]) => {
     setQuestionBank(next);
-    try { localStorage.setItem('family_feud_questions_v3', JSON.stringify(next)); } catch { setBankMessage('تعذر حفظ البنك على هذا الجهاز'); }
+    try { localStorage.setItem('family_challenge_questions_v1', JSON.stringify(next)); } catch { setBankMessage('تعذر حفظ البنك على هذا الجهاز'); }
   };
 
   const exportQuestionBank = (format: 'json' | 'csv') => {
@@ -293,7 +312,7 @@ export function HostController({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      if (event.target instanceof HTMLElement && event.target.closest('input,textarea,select,button,a,[contenteditable="true"]')) return;
       const answerIndex = Number(event.key) - 1;
       if (answerIndex >= 0 && answerIndex < (state.currentQuestion?.answers.length ?? 0)) handleRevealAnswer(answerIndex);
       if (event.key.toLowerCase() === 'x') handleStrike();
@@ -321,6 +340,7 @@ export function HostController({
         <div className="flex flex-wrap items-center gap-2">
           <button onClick={() => setShowEventLog(true)} className="rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-black text-slate-200">سجل المباراة</button>
           <button aria-label="إدارة هوية البرنامج" title="إدارة هوية البرنامج" onClick={() => setShowBrandSettings(true)} className="host-brand-shortcut rounded-xl border border-amber-400/50 bg-blue-950 px-3 py-2 text-xs font-black text-amber-100">✦ <span>الهوية</span></button>
+          {onRestartGame && <button onClick={() => setShowRestartConfirm(true)} className="host-restart-shortcut rounded-xl border border-rose-400/50 bg-rose-950/50 px-3 py-2 text-xs font-black text-rose-100">↻ <span>مباراة جديدة</span></button>}
           <button
             onClick={onUndo}
             disabled={!canUndo}
@@ -381,7 +401,9 @@ export function HostController({
             <span>
               {p2pConnected
                 ? `🟢 متصل بالشاشة مباشرة عبر P2P (الغرفة: ${roomId})`
-                : `🟡 جاري الاتصال المباشر بالشاشة... (الغرفة: ${roomId})`}
+                : serverConnected
+                  ? `🟢 مزامنة حية عبر الخادم (الغرفة: ${roomId})`
+                  : `🟡 جاري الاتصال المباشر بالشاشة... (الغرفة: ${roomId})`}
             </span>
           </div>
           <span className="font-mono text-[11px] bg-black/50 border border-slate-700 px-2 py-0.5 rounded-lg text-white">
@@ -463,6 +485,17 @@ export function HostController({
               {timerExpired ? 'انتهى الوقت' : `${timerRemaining}ث`}
           </div>
         </div>
+
+        <section className="host-audio-controls flex flex-wrap items-center gap-3 rounded-2xl border border-cyan-400/25 bg-slate-900/70 px-3 py-2.5" aria-label="إعدادات الصوت">
+          <button type="button" aria-pressed={Boolean(state.muted)} onClick={() => updateState((prev) => ({ ...prev, muted: !prev.muted }))} className="rounded-xl border border-cyan-300/40 bg-cyan-950/70 px-3 py-2 text-xs font-black text-cyan-100">
+            {state.muted ? '🔇 الصوت مكتوم' : '🔊 كتم الصوت'}
+          </button>
+          <label className="flex min-w-[190px] flex-1 items-center gap-3 text-xs font-bold text-slate-200">
+            <span>مستوى الصوت</span>
+            <input aria-label="مستوى الصوت" type="range" min="0" max="100" step="1" value={Math.round((state.volume ?? 0.8) * 100)} onChange={(event) => updateState((prev) => ({ ...prev, volume: Number(event.target.value) / 100 }))} className="min-w-20 flex-1 accent-cyan-300" />
+            <span className="w-9 text-left tabular-nums">{Math.round((state.volume ?? 0.8) * 100)}٪</span>
+          </label>
+        </section>
 
         {/* 2. Current Question Box & Hidden Answers List (Mobile Remote Pro) */}
         <div className="host-question rounded-3xl border-2 border-blue-500/40 bg-gradient-to-b from-blue-950 to-slate-950 p-4 md:p-6 shadow-xl">
@@ -751,7 +784,7 @@ export function HostController({
       {showBrandSettings && <div className="brand-settings-backdrop" role="dialog" aria-modal="true" aria-labelledby="brand-settings-title" dir="rtl">
         <section className="brand-settings-card">
           <header><div><small>إدارة الهوية البصرية</small><h2 id="brand-settings-title">شعار شاشة الجمهور</h2></div><button type="button" onClick={() => setShowBrandSettings(false)} aria-label="إغلاق">×</button></header>
-          <img className="brand-settings-preview" src={state.brandLogoDataUrl || '/family-challenge-logo.svg'} alt="معاينة الشعار الحالي" />
+          <img className="brand-settings-preview" src={state.brandLogoDataUrl || '/family-challenge-logo-v2.png'} alt="معاينة الشعار الحالي" />
           <p>ارفع PNG بخلفية شفافة أو SVG متجهيًا آمنًا. سيظهر الشعار على شاشة الجمهور عند المزامنة.</p>
           <input ref={brandFileRef} type="file" accept="image/png,image/svg+xml,.png,.svg" hidden onChange={async (event) => {
             const file = event.currentTarget.files?.[0]; event.currentTarget.value = '';
@@ -764,6 +797,13 @@ export function HostController({
           }} />
           <footer><button type="button" className="brand-upload" onClick={() => brandFileRef.current?.click()}>اختيار PNG أو SVG</button><button type="button" className="brand-reset" onClick={() => { updateState((prev) => ({ ...prev, brandLogoDataUrl: undefined })); setBrandMessage(''); }}>استعادة الشعار الأصلي</button></footer>
           {brandMessage && <div className="brand-message" role="status">{brandMessage}</div>}
+        </section>
+      </div>}
+
+      {showRestartConfirm && <div className="brand-settings-backdrop" role="dialog" aria-modal="true" aria-labelledby="restart-title" dir="rtl">
+        <section className="brand-settings-card restart-card"><header><div><small>إعادة تجهيز الساحة</small><h2 id="restart-title">بدء مباراة جديدة؟</h2></div></header>
+          <p>سيُعاد رصيد الفريقين والجولة إلى البداية لهذه الغرفة. بنك الأسئلة وأسماء الفريقين سيبقيان كما هما.</p>
+          <footer><button type="button" className="restart-confirm" onClick={() => { onRestartGame?.(); setShowRestartConfirm(false); }}>ابدأ مباراة جديدة</button><button type="button" className="brand-reset" onClick={() => setShowRestartConfirm(false)}>إلغاء</button></footer>
         </section>
       </div>}
 
@@ -834,6 +874,17 @@ export function HostController({
           </section>
         </div>
       )}
+
+      <aside className="fixed bottom-4 left-4 z-[60] flex flex-col items-start gap-2" dir="rtl">
+        {showQuickAudio && <section className="w-[min(88vw,320px)] rounded-2xl border border-cyan-300/35 bg-slate-950/95 p-4 text-white shadow-2xl backdrop-blur-xl" aria-label="تحكم سريع بالصوت">
+          <div className="mb-3 flex items-center justify-between"><strong className="text-sm">الصوت والمؤثرات</strong><button type="button" onClick={() => setShowQuickAudio(false)} className="rounded-lg px-2 py-1 text-slate-300" aria-label="إغلاق إعدادات الصوت">✕</button></div>
+          <label className="flex items-center gap-3 text-xs font-bold"><span>المستوى</span><input aria-label="مستوى الصوت السريع" type="range" min="0" max="100" value={Math.round((state.volume ?? 0.8) * 100)} onChange={(event) => updateState((prev) => ({ ...prev, volume: Number(event.target.value) / 100 }))} className="flex-1 accent-cyan-300" /><b className="w-9 tabular-nums">{Math.round((state.volume ?? 0.8) * 100)}٪</b></label>
+          <button type="button" onClick={() => updateState((prev) => ({ ...prev, muted: !prev.muted, volume: prev.volume === 0 ? 0.8 : prev.volume }))} aria-pressed={Boolean(state.muted)} className="mt-3 w-full rounded-xl border border-cyan-300/30 bg-cyan-950/80 px-3 py-2.5 text-sm font-black text-cyan-50">{state.muted ? '🔊 تشغيل الصوت' : '🔇 كتم الصوت'}</button>
+        </section>}
+        <button type="button" aria-expanded={showQuickAudio} onClick={() => setShowQuickAudio((open) => !open)} className="flex min-h-12 items-center gap-2 rounded-full border border-cyan-200/50 bg-slate-950/95 px-4 text-sm font-black text-white shadow-[0_0_24px_rgba(34,211,238,.25)] backdrop-blur-xl">
+          <span aria-hidden="true">{state.muted ? '🔇' : '🔊'}</span><span>{showQuickAudio ? 'إغلاق الصوت' : 'الصوت'}</span>
+        </button>
+      </aside>
     </div>
   );
 }

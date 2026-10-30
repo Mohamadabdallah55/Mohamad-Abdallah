@@ -1,5 +1,5 @@
 import { GameState, Question } from '../types/game';
-import { QUESTION_BATCH_01 } from '../data/questionBatch01';
+import { QUESTION_BANK } from '../data/questionBank';
 
 export function getMultiplierForRound(round: number): number {
   if (round === 3) return 2;
@@ -8,7 +8,7 @@ export function getMultiplierForRound(round: number): number {
 }
 
 export function createInitialGameState(): GameState {
-  const firstQuestion = QUESTION_BATCH_01[0];
+  const firstQuestion = QUESTION_BANK[0];
 
   return {
     version: 1,
