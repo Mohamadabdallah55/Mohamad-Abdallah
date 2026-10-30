@@ -3,11 +3,16 @@ export interface AnswerItem {
   points: number;
 }
 
+export type PointsSource = 'estimated' | 'survey';
+
 export interface Question {
   id: number;
   category: string;
   questionText: string;
   answers: AnswerItem[];
+  difficulty?: 'easy' | 'medium' | 'hard';
+  pointsSource?: PointsSource;
+  sourceNote?: string;
 }
 
 export interface Team {
@@ -38,13 +43,23 @@ export interface GameState {
   burntQuestionIds: number[];
   faceOffWinner: 'A' | 'B' | null;
   stealTeam: 'A' | 'B' | null;
+  originalTeam: 'A' | 'B' | null;
   strikeOverlayActive: boolean;
   strikeOverlayCount: number;
+  timerSeconds: number;
+  timerRunning: boolean;
+  timerEndsAt: number | null;
+  volume: number;
+  muted: boolean;
+  awardedRound: number | null;
+  actionId: number;
   roomId?: string;
+  /** Optional manager-provided wordmark shared with the audience display. */
+  brandLogoDataUrl?: string;
   lastUpdated: number;
 }
 
 export type GameSyncMessage = 
   | { type: 'STATE_UPDATE'; state: GameState }
-  | { type: 'TRIGGER_SOUND'; sound: 'chime' | 'strike' | 'bell' | 'tick' | 'duplicate' | 'applause' | 'fanfare' | 'steal' }
+  | { type: 'TRIGGER_SOUND'; sound: 'chime' | 'strike' | 'bell' | 'tick' | 'duplicate' | 'applause' | 'fanfare' | 'steal'; roomId?: string }
   | { type: 'REQUEST_STATE' };

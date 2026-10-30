@@ -6,6 +6,7 @@ interface DeviceConnectModalProps {
   onClose: () => void;
   roomId: string;
   onRoomChange: (newRoom: string) => void;
+  onOpenAudience?: () => void;
 }
 
 export function DeviceConnectModal({
@@ -13,6 +14,7 @@ export function DeviceConnectModal({
   onClose,
   roomId,
   onRoomChange,
+  onOpenAudience,
 }: DeviceConnectModalProps) {
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [copiedHost, setCopiedHost] = useState<boolean>(false);
@@ -43,6 +45,13 @@ export function DeviceConnectModal({
   const [isEditingDomain, setIsEditingDomain] = useState<boolean>(false);
   const [domainInput, setDomainInput] = useState<string>(customDomain);
 
+  useEffect(() => {
+    if (!isOpen || !/^(localhost|127\.0\.0\.1)$/.test(window.location.hostname) || localStorage.getItem('feud_custom_domain')) return;
+    fetch('/api/connect-info').then((response) => response.ok ? response.json() : null).then((data) => {
+      if (data?.localUrl) { setCustomDomain(data.localUrl); setDomainInput(data.localUrl); }
+    }).catch(() => {});
+  }, [isOpen]);
+
   // Helper to get sanitized base URL
   const getBaseUrl = (): string => {
     let base = customDomain.trim();
@@ -57,22 +66,12 @@ export function DeviceConnectModal({
 
   const getHostUrl = () => {
     const base = getBaseUrl();
-    const pathname = typeof window !== 'undefined' ? window.location.pathname : '/';
-    let cleanPath = pathname;
-    if (!cleanPath.endsWith('/') && !cleanPath.endsWith('.html')) {
-      cleanPath += '/';
-    }
-    return `${base}${cleanPath}?mode=remote&room=${encodeURIComponent(roomId)}#remote`;
+    return `${base}/host?room=${encodeURIComponent(roomId)}`;
   };
 
   const getAudienceUrl = () => {
     const base = getBaseUrl();
-    const pathname = typeof window !== 'undefined' ? window.location.pathname : '/';
-    let cleanPath = pathname;
-    if (!cleanPath.endsWith('/') && !cleanPath.endsWith('.html')) {
-      cleanPath += '/';
-    }
-    return `${base}${cleanPath}?mode=display&room=${encodeURIComponent(roomId)}#display`;
+    return `${base}/play?room=${encodeURIComponent(roomId)}`;
   };
 
   // Generate QR code whenever isOpen, roomId, or customDomain changes
@@ -306,16 +305,17 @@ export function DeviceConnectModal({
               {copiedAudience ? '✓ تم' : 'نسخ'}
             </button>
           </div>
+          {onOpenAudience && <button type="button" onClick={onOpenAudience} className="mt-3 w-full rounded-xl bg-amber-500 px-4 py-2.5 text-sm font-black text-slate-950">📺 شغّل شاشة الجمهور على هذا الجهاز</button>}
         </div>
 
         {/* Summary note */}
         <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/30 p-3 text-[11px] text-emerald-200 leading-relaxed space-y-1">
           <div className="flex items-center gap-1.5 font-bold text-emerald-300">
             <span>⚡</span>
-            <span>تزامن مباشر P2P عبر WebRTC (بدون سيرفر):</span>
+            <span>خطوتان للربط:</span>
           </div>
           <p>
-            الرابط المولد يعمل بصيغة مقاومة لـ 404 (<code className="bg-black/40 px-1 py-0.5 rounded text-amber-300 font-mono">?mode=remote&room={roomId}#remote</code>) ومتوافق 100% مع <strong>GitHub Pages</strong> وأي دومين خاص. يتصل هاتفك بالشاشة مباشرة في أجزاء من الثانية!
+            افتح شاشة الجمهور على اللابتوب، ثم امسح الرمز بالهاتف. يجب أن يكون الجهازان على الشبكة نفسها عند استخدام رابط محلي. يظهر الاتصال في لوحة المقدم عند نجاح الربط.
           </p>
         </div>
       </div>

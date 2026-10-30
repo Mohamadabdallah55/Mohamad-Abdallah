@@ -1,5 +1,5 @@
 import { GameState, Question } from '../types/game';
-import { INITIAL_QUESTIONS } from '../data/questions';
+import { QUESTION_BANK } from '../data/questionBank';
 
 export function getMultiplierForRound(round: number): number {
   if (round === 3) return 2;
@@ -8,7 +8,7 @@ export function getMultiplierForRound(round: number): number {
 }
 
 export function createInitialGameState(): GameState {
-  const firstQuestion = INITIAL_QUESTIONS[0];
+  const firstQuestion = QUESTION_BANK[0];
 
   return {
     version: 1,
@@ -33,8 +33,16 @@ export function createInitialGameState(): GameState {
     burntQuestionIds: [firstQuestion.id],
     faceOffWinner: null,
     stealTeam: null,
+    originalTeam: null,
     strikeOverlayActive: false,
     strikeOverlayCount: 0,
+    timerSeconds: 30,
+    timerRunning: false,
+    timerEndsAt: null,
+    volume: 0.8,
+    muted: false,
+    awardedRound: null,
+    actionId: 0,
     lastUpdated: Date.now(),
   };
 }

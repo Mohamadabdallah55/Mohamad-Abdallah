@@ -4,6 +4,83 @@
  */
 
 let audioCtx: AudioContext | null = null;
+let masterBus: GainNode | null = null;
+let outputCompressor: DynamicsCompressorNode | null = null;
+let roomReverb: ConvolverNode | null = null;
+let roomReverbReturn: GainNode | null = null;
+let masterVolume = 0.8;
+let masterMuted = false;
+
+export function setMasterVolume(volume: number) {
+  masterVolume = Math.max(0, Math.min(1, volume));
+  if (audioCtx && masterBus) masterBus.gain.setTargetAtTime(masterMuted ? 0 : masterVolume, audioCtx.currentTime, 0.025);
+}
+
+export function setAudioControls(volume: number, muted: boolean) {
+  masterMuted = muted;
+  setMasterVolume(volume);
+}
+
+function getMasterBus(ctx: AudioContext): GainNode {
+  if (!masterBus) {
+    masterBus = ctx.createGain();
+    masterBus.gain.value = masterMuted ? 0 : masterVolume;
+    outputCompressor = ctx.createDynamicsCompressor();
+    outputCompressor.threshold.value = -12;
+    outputCompressor.knee.value = 10;
+    outputCompressor.ratio.value = 3;
+    outputCompressor.attack.value = 0.004;
+    outputCompressor.release.value = 0.22;
+    masterBus.connect(outputCompressor);
+    outputCompressor.connect(ctx.destination);
+  }
+  return masterBus;
+}
+
+/** A short, original studio-room tail adds space while keeping effects crisp. */
+function getRoomReverb(ctx: AudioContext): ConvolverNode {
+  if (!roomReverb) {
+    const length = Math.floor(ctx.sampleRate * 0.72);
+    const impulse = ctx.createBuffer(2, length, ctx.sampleRate);
+    for (let channelIndex = 0; channelIndex < impulse.numberOfChannels; channelIndex++) {
+      const channel = impulse.getChannelData(channelIndex);
+      for (let i = 0; i < length; i++) {
+        const fade = Math.pow(1 - i / length, 3.4);
+        channel[i] = (Math.random() * 2 - 1) * fade * 0.32;
+      }
+    }
+    roomReverb = ctx.createConvolver();
+    roomReverb.buffer = impulse;
+    roomReverbReturn = ctx.createGain();
+    roomReverbReturn.gain.value = 0.2;
+    roomReverb.connect(roomReverbReturn);
+    roomReverbReturn.connect(getMasterBus(ctx));
+  }
+  return roomReverb;
+}
+
+export function playRevealAccent(volume = masterVolume, muted = false) {
+  if (muted || volume <= 0) return;
+  try {
+    const ctx = getAudioContext();
+    const now = ctx.currentTime;
+    const master = Math.max(0, Math.min(1, volume));
+    [523.25, 783.99, 1174.66].forEach((frequency, index) => {
+      const oscillator = ctx.createOscillator();
+      const envelope = ctx.createGain();
+      const pan = ctx.createStereoPanner();
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(frequency * 0.82, now + index * 0.055);
+      oscillator.frequency.exponentialRampToValueAtTime(frequency, now + index * 0.055 + 0.12);
+      envelope.gain.setValueAtTime(0.0001, now + index * 0.055);
+      envelope.gain.exponentialRampToValueAtTime(0.12 * master / (index + 1), now + index * 0.055 + 0.025);
+      envelope.gain.exponentialRampToValueAtTime(0.0001, now + 0.7);
+      pan.pan.setValueAtTime(index === 0 ? -0.16 : index === 2 ? 0.16 : 0, now);
+      oscillator.connect(envelope); envelope.connect(pan); pan.connect(getMasterBus(ctx));
+      oscillator.start(now + index * 0.055); oscillator.stop(now + 0.75);
+    });
+  } catch { /* Audio is optional when browser playback is unavailable. */ }
+}
 
 function getAudioContext(): AudioContext {
   if (!audioCtx) {
@@ -38,7 +115,8 @@ export function playChime() {
       gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.2);
 
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(getMasterBus(ctx));
+      gain.connect(getRoomReverb(ctx));
 
       osc.start(now);
       osc.stop(now + 1.3);
@@ -55,35 +133,37 @@ export function playStrike() {
   try {
     const ctx = getAudioContext();
     const now = ctx.currentTime;
+    // Original short impact: sub hit, falling dissonant brass and a tight noise snap.
+    const sub = ctx.createOscillator();
+    const subGain = ctx.createGain();
+    sub.type = 'sine';
+    sub.frequency.setValueAtTime(112, now);
+    sub.frequency.exponentialRampToValueAtTime(43, now + 0.34);
+    subGain.gain.setValueAtTime(0.0001, now);
+    subGain.gain.exponentialRampToValueAtTime(0.72, now + 0.012);
+    subGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.48);
+    sub.connect(subGain); subGain.connect(getMasterBus(ctx)); sub.start(now); sub.stop(now + 0.5);
 
-    const tones = [98, 110, 116.54, 155.56, 233.08];
-
-    tones.forEach((freq) => {
+    [196, 207.65, 293.66].forEach((freq, index) => {
       const osc = ctx.createOscillator();
+      const filter = ctx.createBiquadFilter();
       const gain = ctx.createGain();
-
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(freq, now);
-
-      const lfo = ctx.createOscillator();
-      lfo.frequency.setValueAtTime(40, now);
-      const lfoGain = ctx.createGain();
-      lfoGain.gain.setValueAtTime(14, now);
-      lfo.connect(osc.frequency);
-      lfo.start(now);
-      lfo.stop(now + 0.85);
-
-      gain.gain.setValueAtTime(0, now);
-      gain.gain.linearRampToValueAtTime(0.45, now + 0.015);
-      gain.gain.setValueAtTime(0.45, now + 0.65);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.85);
-
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-
-      osc.start(now);
-      osc.stop(now + 0.9);
+      osc.type = index === 2 ? 'sawtooth' : 'square';
+      osc.frequency.setValueAtTime(freq, now + 0.012);
+      osc.frequency.exponentialRampToValueAtTime(freq * (index === 1 ? 0.64 : 0.76), now + 0.38);
+      filter.type = 'lowpass'; filter.frequency.setValueAtTime(1250, now); filter.frequency.exponentialRampToValueAtTime(420, now + 0.34);
+      gain.gain.setValueAtTime(0.0001, now); gain.gain.exponentialRampToValueAtTime(0.23 / (index + 1), now + 0.018);
+      gain.gain.setValueAtTime(0.16 / (index + 1), now + 0.09); gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.44);
+      osc.connect(filter); filter.connect(gain); gain.connect(getMasterBus(ctx)); osc.start(now); osc.stop(now + 0.46);
     });
+
+    const noiseBuffer = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.09), ctx.sampleRate);
+    const channel = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < channel.length; i++) channel[i] = (Math.random() * 2 - 1) * (1 - i / channel.length);
+    const noise = ctx.createBufferSource(); const noiseFilter = ctx.createBiquadFilter(); const noiseGain = ctx.createGain();
+    noise.buffer = noiseBuffer; noiseFilter.type = 'highpass'; noiseFilter.frequency.value = 1800;
+    noiseGain.gain.setValueAtTime(0.2, now); noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.085);
+    noise.connect(noiseFilter); noiseFilter.connect(noiseGain); noiseGain.connect(getMasterBus(ctx)); noise.start(now);
   } catch (e) {
     console.error('Audio error', e);
   }
@@ -107,7 +187,8 @@ export function playBell() {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.9);
 
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(getMasterBus(ctx));
+    gain.connect(getRoomReverb(ctx));
 
     osc.start(now);
     osc.stop(now + 1.0);
@@ -124,24 +205,25 @@ export function playStealAlert() {
     const ctx = getAudioContext();
     const now = ctx.currentTime;
 
-    const freqs = [330, 392, 466, 622];
-    freqs.forEach((freq) => {
+    const freqs = [392, 523.25, 659.25, 783.99];
+    freqs.forEach((freq, index) => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
 
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(freq, now);
+      osc.type = index % 2 ? 'triangle' : 'sawtooth';
+      osc.frequency.setValueAtTime(freq * 0.72, now + index * 0.075);
+      osc.frequency.exponentialRampToValueAtTime(freq, now + index * 0.075 + 0.11);
 
       gain.gain.setValueAtTime(0, now);
-      gain.gain.linearRampToValueAtTime(0.15, now + 0.08);
-      gain.gain.setValueAtTime(0.12, now + 0.6);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.4);
+      gain.gain.linearRampToValueAtTime(0.13, now + index * 0.075 + 0.04);
+      gain.gain.setValueAtTime(0.1, now + index * 0.075 + 0.2);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.05);
 
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(getMasterBus(ctx));
 
-      osc.start(now);
-      osc.stop(now + 1.5);
+      osc.start(now + index * 0.075);
+      osc.stop(now + 1.1);
     });
   } catch (e) {
     console.error('Audio error', e);
@@ -199,7 +281,7 @@ export function playCelebrationHorns() {
 
         osc.connect(filter);
         filter.connect(gain);
-        gain.connect(ctx.destination);
+        gain.connect(getMasterBus(ctx));
 
         osc.start(blastTime);
         osc.stop(blastTime + duration + 0.05);
@@ -214,6 +296,7 @@ export function playCelebrationHorns() {
  * Dispatch sound helper
  */
 export function playSound(sound: 'chime' | 'strike' | 'bell' | 'tick' | 'duplicate' | 'applause' | 'fanfare' | 'steal') {
+  if (masterMuted || masterVolume <= 0) return;
   switch (sound) {
     case 'chime':
       playChime();

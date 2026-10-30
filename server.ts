@@ -1,6 +1,11 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
+import os from 'node:os';
+import fs from 'node:fs';
 import { fileURLToPath } from 'url';
+import type { GameState } from './src/types/game';
+import { toAudienceState } from './src/utils/audienceState';
+import { isNewerState } from './src/utils/stateVersion';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,46 +26,98 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: '10mb' }));
 
-// In-memory room storage for real-time synchronization across devices
+// Local Express persistence. Vercel needs a configured durable backend before this API can be used there.
 interface RoomData {
-  state: unknown;
+  state: GameState | null;
   lastUpdated: number;
   clients: Set<Response>;
 }
 
 const rooms = new Map<string, RoomData>();
+const roomDataDir = process.env.FAMILY_CHALLENGE_ROOM_DIR || path.resolve(__dirname, '.room-state');
+const cleanRoomId = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  const room = value.toUpperCase().trim();
+  return /^[A-Z0-9_-]{1,32}$/.test(room) ? room : null;
+};
 
-function getOrCreateRoom(roomId: string = 'MAIN'): RoomData {
-  const normalizedId = roomId.toUpperCase().trim() || 'MAIN';
-  let room = rooms.get(normalizedId);
+function validPublicState(value: unknown): value is GameState {
+  if (!value || typeof value !== 'object') return false;
+  const state = value as GameState;
+  if (!Number.isSafeInteger(state.actionId) || state.actionId < 0 || !Number.isFinite(state.lastUpdated)) return false;
+  if (!Number.isInteger(state.currentRound) || state.currentRound < 1 || state.currentRound > 4) return false;
+  if (!Array.isArray(state.revealedAnswers) || !Array.isArray(state.currentQuestion?.answers)) return false;
+  if (state.revealedAnswers.length !== state.currentQuestion.answers.length) return false;
+  return state.currentQuestion.answers.every((answer, index) =>
+    typeof answer.text === 'string' && typeof answer.points === 'number' &&
+    (state.revealedAnswers[index] || (answer.text === '' && answer.points === 0))
+  );
+}
+
+function roomFromRequest(req: Request): string | null {
+  return cleanRoomId(req.query.room || req.body?.room || 'MAIN');
+}
+
+app.get('/api/connect-info', (_req: Request, res: Response) => {
+  const addresses = Object.values(os.networkInterfaces()).flatMap((entries) => entries ?? [])
+    .filter((entry) => entry.family === 'IPv4' && !entry.internal)
+    .map((entry) => entry.address);
+  res.json({ localUrl: addresses.length ? `http://${addresses[0]}:${PORT}` : null });
+});
+
+function getOrCreateRoom(roomId: string): RoomData {
+  let room = rooms.get(roomId);
   if (!room) {
+    let savedState: GameState | null = null;
+    try {
+      const data = JSON.parse(fs.readFileSync(path.join(roomDataDir, `${roomId}.json`), 'utf8')) as GameState;
+      if (validPublicState(data) && data.roomId === roomId) savedState = data;
+    } catch { /* A new room has no saved state. */ }
     room = {
-      state: null,
-      lastUpdated: Date.now(),
+      state: savedState,
+      lastUpdated: savedState?.lastUpdated ?? Date.now(),
       clients: new Set(),
     };
-    rooms.set(normalizedId, room);
+    rooms.set(roomId, room);
   }
   return room;
 }
 
 // 1. Get room state
 app.get('/api/sync/state', (req: Request, res: Response) => {
-  const roomId = (req.query.room as string) || 'MAIN';
+  const roomId = roomFromRequest(req);
+  if (!roomId) return res.status(400).json({ error: 'Invalid room code' });
   const room = getOrCreateRoom(roomId);
   res.json({ state: room.state, lastUpdated: room.lastUpdated });
 });
 
 // 2. Post room state update and broadcast to all connected devices in this room
 app.post('/api/sync/state', (req: Request, res: Response) => {
-  const roomId = (req.query.room as string) || req.body.room || 'MAIN';
+  const roomId = roomFromRequest(req);
+  if (!roomId) return res.status(400).json({ error: 'Invalid room code' });
   const { state } = req.body;
+  if (!validPublicState(state) || state.roomId !== roomId) {
+    return res.status(400).json({ error: 'Expected audience-safe game state for this room' });
+  }
 
   const room = getOrCreateRoom(roomId);
-  room.state = state;
-  room.lastUpdated = Date.now();
+  if (room.state && !isNewerState(state, room.state)) {
+    return res.json({ success: true, duplicate: true, lastUpdated: room.lastUpdated });
+  }
+  const publicState = toAudienceState(state);
+  try {
+    fs.mkdirSync(roomDataDir, { recursive: true });
+    const target = path.join(roomDataDir, `${roomId}.json`);
+    const temporary = `${target}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify(publicState), { mode: 0o600 });
+    fs.renameSync(temporary, target);
+  } catch {
+    return res.status(503).json({ error: 'Could not persist room state' });
+  }
+  room.state = publicState;
+  room.lastUpdated = publicState.lastUpdated;
 
-  const payload = `data: ${JSON.stringify({ type: 'STATE_UPDATE', state, roomId })}\n\n`;
+  const payload = `data: ${JSON.stringify({ type: 'STATE_UPDATE', state: publicState, roomId })}\n\n`;
   room.clients.forEach((client) => {
     try {
       client.write(payload);
@@ -74,7 +131,8 @@ app.post('/api/sync/state', (req: Request, res: Response) => {
 
 // 3. Post sound event trigger and broadcast to audience screen devices
 app.post('/api/sync/sound', (req: Request, res: Response) => {
-  const roomId = (req.query.room as string) || req.body.room || 'MAIN';
+  const roomId = roomFromRequest(req);
+  if (!roomId) return res.status(400).json({ error: 'Invalid room code' });
   const { sound } = req.body;
 
   const room = getOrCreateRoom(roomId);
@@ -93,7 +151,8 @@ app.post('/api/sync/sound', (req: Request, res: Response) => {
 
 // 4. Server-Sent Events stream for instant low-latency real-time synchronization
 app.get('/api/sync/events', (req: Request, res: Response) => {
-  const roomId = (req.query.room as string) || 'MAIN';
+  const roomId = roomFromRequest(req);
+  if (!roomId) return res.status(400).json({ error: 'Invalid room code' });
   const room = getOrCreateRoom(roomId);
 
   res.writeHead(200, {

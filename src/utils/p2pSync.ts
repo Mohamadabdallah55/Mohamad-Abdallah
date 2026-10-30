@@ -5,6 +5,7 @@
  */
 import { Peer, DataConnection } from 'peerjs';
 import { GameState, GameSyncMessage } from '../types/game';
+import { toAudienceState } from './audienceState';
 
 interface P2PCallbacks {
   onStateUpdate: (state: GameState) => void;
@@ -133,24 +134,15 @@ function setupConnection(
     activeConnections.add(conn);
     callbacks.onConnectionStatusChange?.(true, activeConnections.size);
 
-    // If Display, immediately send current game state to the freshly connected remote
-    if (role === 'display' && currentStateGetter) {
+    // The host phone is the source of truth. It pushes the redacted projection to the display.
+    if (role === 'remote' && currentStateGetter) {
       const current = currentStateGetter();
       if (current) {
         try {
-          conn.send({ type: 'STATE_UPDATE', state: current });
+          conn.send({ type: 'STATE_UPDATE', state: toAudienceState(current) });
         } catch {
           // ignore
         }
-      }
-    }
-
-    // If Remote, request current state from Display
-    if (role === 'remote') {
-      try {
-        conn.send({ type: 'REQUEST_STATE' });
-      } catch {
-        // ignore
       }
     }
   });
@@ -159,14 +151,9 @@ function setupConnection(
     if (!data || typeof data !== 'object') return;
     const msg = data as { type: string; state?: GameState; sound?: string };
 
-    if (msg.type === 'REQUEST_STATE' && role === 'display' && currentStateGetter) {
-      const current = currentStateGetter();
-      if (current) {
-        conn.send({ type: 'STATE_UPDATE', state: current });
-      }
-    } else if (msg.type === 'STATE_UPDATE' && msg.state) {
+    if (msg.type === 'STATE_UPDATE' && msg.state && role === 'display') {
       callbacks.onStateUpdate(msg.state);
-    } else if (msg.type === 'TRIGGER_SOUND' && msg.sound) {
+    } else if (msg.type === 'TRIGGER_SOUND' && msg.sound && role === 'display') {
       callbacks.onSoundTrigger(msg.sound as unknown as Parameters<typeof callbacks.onSoundTrigger>[0]);
     }
   });
