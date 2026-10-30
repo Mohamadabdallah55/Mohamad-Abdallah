@@ -15,6 +15,7 @@ import {
 } from './utils/sync';
 import { playSound, setAudioControls } from './utils/audio';
 import { initP2PSync } from './utils/p2pSync';
+import { isNewerState, nextStateVersion } from './utils/stateVersion';
 import { AudienceScreen } from './components/AudienceScreen';
 import { HostController } from './components/HostController';
 import { DeviceConnectModal } from './components/DeviceConnectModal';
@@ -133,7 +134,7 @@ export default function App() {
     if (screenMode !== 'audience') return;
     fetchRemoteState(roomId).then((remote) => {
       if (remote && (!remote.roomId || remote.roomId === roomId)) {
-        setGameState(hydrateQuestion(remote));
+        setGameState((current) => isNewerState(remote, current) ? hydrateQuestion(remote) : current);
       }
     });
   }, [roomId, hydrateQuestion, screenMode]);
@@ -145,10 +146,7 @@ export default function App() {
       if (msg.type === 'STATE_UPDATE' && msg.state) {
         setGameState((prev) => {
           // Avoid echoing / re-rendering if update is older than or equal to current state
-          if (msg.state.lastUpdated && prev.lastUpdated && msg.state.lastUpdated <= prev.lastUpdated) {
-            return prev;
-          }
-          return hydrateQuestion(msg.state);
+          return isNewerState(msg.state, prev) ? hydrateQuestion(msg.state) : prev;
         });
       } else if (msg.type === 'TRIGGER_SOUND') {
         playSound(msg.sound);
@@ -180,10 +178,7 @@ export default function App() {
       onStateUpdate: (remoteState) => {
         if (remoteState.roomId && remoteState.roomId !== roomId) return;
         setGameState((prev) => {
-          if (remoteState.lastUpdated && prev.lastUpdated && remoteState.lastUpdated <= prev.lastUpdated) {
-            return prev;
-          }
-          return hydrateQuestion(remoteState);
+          return isNewerState(remoteState, prev) ? hydrateQuestion(remoteState) : prev;
         });
       },
       onSoundTrigger: (sound) => {
@@ -203,7 +198,7 @@ export default function App() {
         const next = updater(prev);
         if (next === prev) return prev;
         if (screenMode === 'host') historyRef.current = [...historyRef.current.slice(-29), prev];
-        const withMeta = { ...next, roomId, actionId: (prev.actionId ?? 0) + 1, lastUpdated: Date.now() };
+        const withMeta = { ...next, roomId, ...nextStateVersion(prev) };
         broadcastGameState(withMeta, roomId);
         return withMeta;
       });
@@ -214,7 +209,7 @@ export default function App() {
   const undoLastAction = useCallback(() => {
     const previous = historyRef.current.pop();
     if (!previous) return;
-    const restored = { ...previous, roomId, actionId: (gameStateRef.current.actionId ?? 0) + 1, lastUpdated: Date.now() };
+    const restored = { ...previous, roomId, ...nextStateVersion(gameStateRef.current) };
     setGameState(restored);
     broadcastGameState(restored, roomId);
   }, [roomId]);
@@ -235,7 +230,7 @@ export default function App() {
 
   // Reset full game immediately without window.confirm (which blocks in iframes)
   const resetGame = () => {
-    const fresh = { ...createInitialGameState(), roomId, lastUpdated: Date.now() };
+    const fresh = { ...createInitialGameState(), roomId, ...nextStateVersion(gameStateRef.current) };
     setGameState(fresh);
     historyRef.current = [];
     broadcastGameState(fresh, roomId);

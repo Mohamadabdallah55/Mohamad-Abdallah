@@ -384,7 +384,7 @@ export function HostController({
 
       {/* Main Simplified Command Center */}
       <main className="host-main mx-auto max-w-4xl space-y-4">
-        {/* P2P Live Connection Status Badge */}
+        {/* Connection status: a reachable API does not prove that a TV has joined. */}
         <div
           className={`host-connection flex items-center justify-between px-3.5 py-2 rounded-2xl border text-xs font-bold transition-all shadow-sm ${
             p2pConnected
@@ -402,13 +402,13 @@ export function HostController({
               {p2pConnected
                 ? `🟢 متصل بالشاشة مباشرة عبر P2P (الغرفة: ${roomId})`
                 : serverConnected
-                  ? `🟢 مزامنة حية عبر الخادم (الغرفة: ${roomId})`
-                  : `🟡 جاري الاتصال المباشر بالشاشة... (الغرفة: ${roomId})`}
+                  ? `🟡 الخادم متاح؛ افتح شاشة الجمهور برمز ${roomId}`
+                  : `🟡 شاشة الجمهور غير متصلة؛ افتحها برمز ${roomId}`}
             </span>
           </div>
-          <span className="font-mono text-[11px] bg-black/50 border border-slate-700 px-2 py-0.5 rounded-lg text-white">
-            كود الغرفة: {roomId}
-          </span>
+          <button type="button" onClick={onOpenConnectModal} className="font-mono text-[11px] bg-black/50 border border-slate-700 px-2 py-1 rounded-lg text-white shrink-0">
+            ربط الشاشة ↗
+          </button>
         </div>
 
         {/* 1. Scoreboard Bar with Animated Counters */}

@@ -4,6 +4,7 @@ import { QUESTION_BANK } from '../src/data/questionBank';
 import { createInitialGameState } from '../src/utils/gameDefaults';
 import { awardRound, completeGame, resolveSteal } from '../src/utils/gameEngine';
 import { toAudienceState } from '../src/utils/audienceState';
+import { isNewerState, nextStateVersion } from '../src/utils/stateVersion';
 import type { GameState } from '../src/types/game';
 
 function makeRoundState(round: number, teamA = 0, teamB = 0): GameState {
@@ -114,4 +115,14 @@ test('audience state exposes only revealed answer text and points', () => {
     assert.equal(publicState.currentQuestion?.answers[index].points, 0);
   });
   assert.equal(state.currentQuestion?.answers[0].text, question.answers[0].text);
+});
+
+test('restart and Undo keep a strictly increasing room version', () => {
+  const current = { ...makeRoundState(2), actionId: 9, lastUpdated: Date.now() + 1000 };
+  const reset = { ...createInitialGameState(), ...nextStateVersion(current) };
+  assert.equal(reset.actionId, 10);
+  assert.ok(reset.lastUpdated > current.lastUpdated);
+  assert.equal(isNewerState(reset, current), true);
+  assert.equal(isNewerState(current, reset), false);
+  assert.equal(isNewerState(reset, reset), false);
 });
