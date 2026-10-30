@@ -52,7 +52,6 @@ export function HostController({
   const [showTeamEditModal, setShowTeamEditModal] = useState<boolean>(false);
   const [showBrandSettings, setShowBrandSettings] = useState(false);
   const [showRestartConfirm, setShowRestartConfirm] = useState(false);
-  const [showQuickAudio, setShowQuickAudio] = useState(false);
   const [brandMessage, setBrandMessage] = useState('');
   const [showEventLog, setShowEventLog] = useState(false);
   const [eventLog, setEventLog] = useState<Array<{ id: number; label: string; time: string }>>([]);
@@ -874,17 +873,6 @@ export function HostController({
           </section>
         </div>
       )}
-
-      <aside className="fixed bottom-4 left-4 z-[60] flex flex-col items-start gap-2" dir="rtl">
-        {showQuickAudio && <section className="w-[min(88vw,320px)] rounded-2xl border border-cyan-300/35 bg-slate-950/95 p-4 text-white shadow-2xl backdrop-blur-xl" aria-label="تحكم سريع بالصوت">
-          <div className="mb-3 flex items-center justify-between"><strong className="text-sm">الصوت والمؤثرات</strong><button type="button" onClick={() => setShowQuickAudio(false)} className="rounded-lg px-2 py-1 text-slate-300" aria-label="إغلاق إعدادات الصوت">✕</button></div>
-          <label className="flex items-center gap-3 text-xs font-bold"><span>المستوى</span><input aria-label="مستوى الصوت السريع" type="range" min="0" max="100" value={Math.round((state.volume ?? 0.8) * 100)} onChange={(event) => updateState((prev) => ({ ...prev, volume: Number(event.target.value) / 100 }))} className="flex-1 accent-cyan-300" /><b className="w-9 tabular-nums">{Math.round((state.volume ?? 0.8) * 100)}٪</b></label>
-          <button type="button" onClick={() => updateState((prev) => ({ ...prev, muted: !prev.muted, volume: prev.volume === 0 ? 0.8 : prev.volume }))} aria-pressed={Boolean(state.muted)} className="mt-3 w-full rounded-xl border border-cyan-300/30 bg-cyan-950/80 px-3 py-2.5 text-sm font-black text-cyan-50">{state.muted ? '🔊 تشغيل الصوت' : '🔇 كتم الصوت'}</button>
-        </section>}
-        <button type="button" aria-expanded={showQuickAudio} onClick={() => setShowQuickAudio((open) => !open)} className="flex min-h-12 items-center gap-2 rounded-full border border-cyan-200/50 bg-slate-950/95 px-4 text-sm font-black text-white shadow-[0_0_24px_rgba(34,211,238,.25)] backdrop-blur-xl">
-          <span aria-hidden="true">{state.muted ? '🔇' : '🔊'}</span><span>{showQuickAudio ? 'إغلاق الصوت' : 'الصوت'}</span>
-        </button>
-      </aside>
     </div>
   );
 }
