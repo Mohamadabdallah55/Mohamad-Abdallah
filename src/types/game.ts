@@ -43,6 +43,7 @@ export interface GameState {
   burntQuestionIds: number[];
   faceOffWinner: 'A' | 'B' | null;
   stealTeam: 'A' | 'B' | null;
+  originalTeam: 'A' | 'B' | null;
   strikeOverlayActive: boolean;
   strikeOverlayCount: number;
   timerSeconds: number;

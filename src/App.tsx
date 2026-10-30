@@ -79,12 +79,27 @@ export default function App() {
   const [showConnectModal, setShowConnectModal] = useState<boolean>(false);
 
   const [gameState, setGameState] = useState<GameState>(() => {
-    const saved = loadGameStateFromStorage();
+    let saved: GameState | null = null;
+    if (screenMode === 'host') {
+      try {
+        const privateState = localStorage.getItem('family_feud_host_private_state');
+        saved = privateState ? JSON.parse(privateState) as GameState : loadGameStateFromStorage();
+      } catch {
+        saved = loadGameStateFromStorage();
+      }
+    }
     if (saved) {
       const normalized = normalizeLoadedState({ ...saved, roomId });
-      return screenMode === 'audience' ? toAudienceState(normalized) : normalized;
+      return normalized;
     }
-    return { ...createInitialGameState(), roomId };
+    if (screenMode === 'audience') {
+      try {
+        const publicSaved = localStorage.getItem('family_feud_public_state');
+        if (publicSaved) return normalizeLoadedState({ ...JSON.parse(publicSaved) as GameState, roomId });
+      } catch { /* Continue with a fresh public view. */ }
+    }
+    const fresh = { ...createInitialGameState(), roomId };
+    return screenMode === 'audience' ? toAudienceState(fresh) : fresh;
   });
 
   const historyRef = useRef<GameState[]>([]);
@@ -96,7 +111,7 @@ export default function App() {
   }, [screenMode]);
 
   useEffect(() => {
-    setGameState((current) => screenMode === 'host' ? hydrateQuestion(current) : toAudienceState(current));
+    if (screenMode === 'host') setGameState((current) => hydrateQuestion(current));
   }, [screenMode, hydrateQuestion]);
 
   const gameStateRef = useRef(gameState);
@@ -111,7 +126,7 @@ export default function App() {
         setGameState(hydrateQuestion(remote));
       }
     });
-  }, [roomId, hydrateQuestion]);
+  }, [roomId, hydrateQuestion, screenMode]);
 
   // Subscribe to BroadcastChannel & Server-Sent Events (SSE)
   useEffect(() => {
@@ -127,7 +142,7 @@ export default function App() {
       } else if (msg.type === 'TRIGGER_SOUND') {
         playSound(msg.sound);
       }
-    }, roomId);
+    }, roomId, 'audience');
 
     return () => {
       unsubscribe();
@@ -166,9 +181,7 @@ export default function App() {
     (updater: (prev: GameState) => GameState) => {
       setGameState((prev) => {
         const next = updater(prev);
-        if (screenMode === 'host') {
-          historyRef.current = [...historyRef.current.slice(-29), prev];
-        }
+        if (screenMode === 'host') historyRef.current = [...historyRef.current.slice(-29), prev];
         const withMeta = { ...next, roomId, actionId: (prev.actionId ?? 0) + 1, lastUpdated: Date.now() };
         broadcastGameState(withMeta, roomId);
         return withMeta;
@@ -184,6 +197,11 @@ export default function App() {
     setGameState(restored);
     broadcastGameState(restored, roomId);
   }, [roomId]);
+
+  useEffect(() => {
+    if (screenMode !== 'host') return;
+    try { localStorage.setItem('family_feud_host_private_state', JSON.stringify(gameState)); } catch { /* storage may be unavailable */ }
+  }, [gameState, screenMode]);
 
   // Sound trigger that plays locally and broadcasts to all devices
   const triggerSound = useCallback(

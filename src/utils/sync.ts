@@ -82,16 +82,12 @@ export function broadcastGameState(state: GameState, roomId: string = 'FEUD') {
   const publicState = toAudienceState(state);
   const msg: GameSyncMessage = { type: 'STATE_UPDATE', state: publicState };
 
-  // 1. Instant local broadcast (tabs on the same browser)
+  try { localStorage.setItem('family_feud_public_state', JSON.stringify(publicState)); } catch { /* Storage may be unavailable. */ }
   if (broadcastChannel) {
-    try {
-      broadcastChannel.postMessage(msg);
-    } catch {
-      // ignore
-    }
+    try { broadcastChannel.postMessage(msg); } catch { /* channel may be unavailable */ }
   }
 
-  // 2. WebRTC P2P direct sync to phone/display (serverless)
+  // Broadcast only the redacted public projection. Keep secret answer data in host storage.
   broadcastP2PMessage(msg);
 
   // 3. Server broadcast with throttling (avoids freezing/lagging the browser)
@@ -202,7 +198,8 @@ export async function fetchRemoteState(roomId: string = 'FEUD'): Promise<GameSta
  */
 export function subscribeToSync(
   onMessage: (msg: GameSyncMessage) => void,
-  roomId: string = 'FEUD'
+  roomId: string = 'FEUD',
+  role: 'host' | 'audience' = 'audience'
 ): () => void {
   // 1. BroadcastChannel Listener
   const channelListener = (event: MessageEvent) => {
@@ -211,15 +208,15 @@ export function subscribeToSync(
     }
   };
 
-  if (broadcastChannel) {
+  if (broadcastChannel && role === 'audience') {
     broadcastChannel.addEventListener('message', channelListener);
   }
 
   // Fallback to storage event ONLY if BroadcastChannel is not supported
   let storageListener: ((e: StorageEvent) => void) | null = null;
-  if (!broadcastChannel) {
+  if (!broadcastChannel && role === 'audience') {
     storageListener = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY && e.newValue) {
+      if (e.key === 'family_feud_public_state' && e.newValue) {
         try {
           const state = JSON.parse(e.newValue) as GameState;
           onMessage({ type: 'STATE_UPDATE', state });
@@ -247,7 +244,7 @@ export function subscribeToSync(
   if (serverBase) {
     try {
       let consecutiveErrors = 0;
-      eventSource = new EventSource(`${serverBase}/api/sync/events?room=${encodeURIComponent(roomId)}`);
+      eventSource = new EventSource(`${serverBase}/api/sync/events?room=${encodeURIComponent(roomId)}&role=${role}`);
 
       eventSource.onmessage = (event) => {
         consecutiveErrors = 0;
@@ -278,7 +275,7 @@ export function subscribeToSync(
   }
 
   return () => {
-    if (broadcastChannel) {
+    if (broadcastChannel && role === 'audience') {
       broadcastChannel.removeEventListener('message', channelListener);
     }
     if (storageListener) {

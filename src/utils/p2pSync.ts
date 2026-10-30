@@ -17,6 +17,19 @@ let peerInstance: Peer | null = null;
 const activeConnections = new Set<DataConnection>();
 let currentStateGetter: (() => GameState | null) | null = null;
 
+function audienceProjection(state: GameState): GameState {
+  if (!state.currentQuestion) return state;
+  return {
+    ...state,
+    currentQuestion: {
+      ...state.currentQuestion,
+      answers: state.currentQuestion.answers.map((answer, index) =>
+        state.revealedAnswers[index] ? answer : { ...answer, text: '', points: 0 }
+      ),
+    },
+  };
+}
+
 // Unique peer ID for room host (Display)
 export function getRoomHostPeerId(roomId: string): string {
   const clean = roomId.toUpperCase().replace(/[^A-Z0-9_-]/g, '') || 'MAIN';
@@ -138,7 +151,7 @@ function setupConnection(
       const current = currentStateGetter();
       if (current) {
         try {
-          conn.send({ type: 'STATE_UPDATE', state: current });
+          conn.send({ type: 'STATE_UPDATE', state: audienceProjection(current) });
         } catch {
           // ignore
         }
@@ -162,7 +175,7 @@ function setupConnection(
     if (msg.type === 'REQUEST_STATE' && role === 'display' && currentStateGetter) {
       const current = currentStateGetter();
       if (current) {
-        conn.send({ type: 'STATE_UPDATE', state: current });
+        conn.send({ type: 'STATE_UPDATE', state: audienceProjection(current) });
       }
     } else if (msg.type === 'STATE_UPDATE' && msg.state) {
       callbacks.onStateUpdate(msg.state);

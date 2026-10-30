@@ -33,6 +33,7 @@ export function createInitialGameState(): GameState {
     burntQuestionIds: [firstQuestion.id],
     faceOffWinner: null,
     stealTeam: null,
+    originalTeam: null,
     strikeOverlayActive: false,
     strikeOverlayCount: 0,
     timerSeconds: 30,

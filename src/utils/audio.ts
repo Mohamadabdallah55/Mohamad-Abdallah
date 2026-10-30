@@ -4,6 +4,34 @@
  */
 
 let audioCtx: AudioContext | null = null;
+let masterVolume = 0.8;
+
+export function setMasterVolume(volume: number) {
+  masterVolume = Math.max(0, Math.min(1, volume));
+}
+
+export function playRevealAccent(volume = masterVolume, muted = false) {
+  if (muted || volume <= 0) return;
+  try {
+    const ctx = getAudioContext();
+    const now = ctx.currentTime;
+    const master = Math.max(0, Math.min(1, volume));
+    [523.25, 783.99, 1174.66].forEach((frequency, index) => {
+      const oscillator = ctx.createOscillator();
+      const envelope = ctx.createGain();
+      const pan = ctx.createStereoPanner();
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(frequency * 0.82, now + index * 0.055);
+      oscillator.frequency.exponentialRampToValueAtTime(frequency, now + index * 0.055 + 0.12);
+      envelope.gain.setValueAtTime(0.0001, now + index * 0.055);
+      envelope.gain.exponentialRampToValueAtTime(0.12 * master / (index + 1), now + index * 0.055 + 0.025);
+      envelope.gain.exponentialRampToValueAtTime(0.0001, now + 0.7);
+      pan.pan.setValueAtTime(index === 0 ? -0.16 : index === 2 ? 0.16 : 0, now);
+      oscillator.connect(envelope); envelope.connect(pan); pan.connect(ctx.destination);
+      oscillator.start(now + index * 0.055); oscillator.stop(now + 0.75);
+    });
+  } catch { /* Audio is optional when browser playback is unavailable. */ }
+}
 
 function getAudioContext(): AudioContext {
   if (!audioCtx) {
