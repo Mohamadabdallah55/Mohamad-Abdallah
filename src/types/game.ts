@@ -54,10 +54,12 @@ export interface GameState {
   awardedRound: number | null;
   actionId: number;
   roomId?: string;
+  /** Optional manager-provided wordmark shared with the audience display. */
+  brandLogoDataUrl?: string;
   lastUpdated: number;
 }
 
 export type GameSyncMessage = 
   | { type: 'STATE_UPDATE'; state: GameState }
-  | { type: 'TRIGGER_SOUND'; sound: 'chime' | 'strike' | 'bell' | 'tick' | 'duplicate' | 'applause' | 'fanfare' | 'steal' }
+  | { type: 'TRIGGER_SOUND'; sound: 'chime' | 'strike' | 'bell' | 'tick' | 'duplicate' | 'applause' | 'fanfare' | 'steal'; roomId?: string }
   | { type: 'REQUEST_STATE' };

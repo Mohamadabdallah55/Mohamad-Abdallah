@@ -29,6 +29,14 @@ export function awardRound(state: GameState, team: 'A' | 'B'): GameState {
   };
 }
 
+export function resolveSteal(state: GameState, success: boolean): GameState {
+  if (state.phase !== 'STEAL' || state.awardedRound === state.currentRound) return state;
+  const beneficiary = success
+    ? state.stealTeam || (state.activeTeam === 'A' ? 'B' : 'A')
+    : state.originalTeam || state.activeTeam || 'A';
+  return awardRound(state, beneficiary);
+}
+
 export function completeGame(state: GameState): GameState {
   if (state.currentRound !== 4 || state.phase !== 'ROUND_OVER' || state.awardedRound !== 4) return state;
   return { ...state, phase: 'GAME_OVER', timerRunning: false, timerEndsAt: null };

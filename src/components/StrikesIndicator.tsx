@@ -41,23 +41,12 @@ export function StrikeOverlay({
   if (!active || count === 0) return null;
 
   return (
-    <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center">
-      {/* Instantaneous fast red flash (350ms pure opacity) */}
-      <div className="absolute inset-0 bg-red-600/35 animate-red-flash-fast" />
-
-      {/* GPU Accelerated ❌ Pop (scale and opacity only, 380ms) */}
-      <div className="relative z-10 flex flex-wrap items-center justify-center gap-3 sm:gap-6 md:gap-8 animate-fast-strike will-change-transform">
-        {Array.from({ length: Math.min(3, count) }).map((_, i) => (
-          <div
-            key={i}
-            className="flex h-36 w-36 sm:h-48 sm:w-48 md:h-60 md:w-60 lg:h-72 lg:w-72 items-center justify-center rounded-3xl md:rounded-[36px] border-4 md:border-6 border-red-400 bg-gradient-to-b from-red-500 via-red-600 to-red-950 shadow-[0_0_60px_rgba(239,68,68,0.9),inset_0_4px_16px_rgba(255,255,255,0.4)]"
-          >
-            <span className="text-7xl sm:text-9xl md:text-[11rem] lg:text-[13rem] text-white font-black leading-none drop-shadow-[0_6px_20px_rgba(0,0,0,0.9)] select-none">
-              ✕
-            </span>
-          </div>
-        ))}
-      </div>
+    <div className={`strike-cinema strike-count-${Math.min(3, count)}`} role="alert" aria-label={`خطأ رقم ${Math.min(3, count)}`}>
+      <div className="strike-cinema-flash" />
+      <div className="strike-cinema-rings"><i /><i /><i /></div>
+      <div className="strike-cinema-mark"><span>×</span></div>
+      <strong>{count >= 3 ? 'ثلاثة أخطاء' : 'إجابة خاطئة'}</strong>
+      <small>{count >= 3 ? 'الدور ينتقل — فرصة السرقة' : `الخطأ ${count} من 3`}</small>
     </div>
   );
 }

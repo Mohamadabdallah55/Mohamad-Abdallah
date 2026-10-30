@@ -3,10 +3,12 @@ import { GameState, GameSyncMessage } from './types/game';
 import { createInitialGameState } from './utils/gameDefaults';
 import { normalizeLoadedState } from './utils/gameEngine';
 import { INITIAL_QUESTIONS } from './data/questions';
+import { QUESTION_BATCH_01 } from './data/questionBatch01';
 import {
   broadcastGameState,
   broadcastSound,
   fetchRemoteState,
+  loadAudienceStateFromStorage,
   loadGameStateFromStorage,
   subscribeToSync,
   toAudienceState,
@@ -71,7 +73,7 @@ export default function App() {
   const [isTvCleanMode, setIsTvCleanMode] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
-      return params.get('screen') === 'audience' || params.get('clean') === '1';
+      return window.location.pathname === '/play' || params.get('screen') === 'audience' || params.get('clean') === '1';
     }
     return false;
   });
@@ -82,10 +84,12 @@ export default function App() {
     let saved: GameState | null = null;
     if (screenMode === 'host') {
       try {
-        const privateState = localStorage.getItem('family_feud_host_private_state');
-        saved = privateState ? JSON.parse(privateState) as GameState : loadGameStateFromStorage();
+        const privateState = localStorage.getItem(`family_feud_host_private_state:${encodeURIComponent(roomId)}`);
+        const legacyPrivate = localStorage.getItem('family_feud_host_private_state');
+        const parsedLegacy = legacyPrivate ? JSON.parse(legacyPrivate) as GameState : null;
+        saved = privateState ? JSON.parse(privateState) as GameState : parsedLegacy?.roomId === roomId ? parsedLegacy : loadGameStateFromStorage(roomId);
       } catch {
-        saved = loadGameStateFromStorage();
+        saved = loadGameStateFromStorage(roomId);
       }
     }
     if (saved) {
@@ -94,8 +98,8 @@ export default function App() {
     }
     if (screenMode === 'audience') {
       try {
-        const publicSaved = localStorage.getItem('family_feud_public_state');
-        if (publicSaved) return normalizeLoadedState({ ...JSON.parse(publicSaved) as GameState, roomId });
+        const publicSaved = loadAudienceStateFromStorage(roomId);
+        if (publicSaved) return normalizeLoadedState({ ...publicSaved, roomId });
       } catch { /* Continue with a fresh public view. */ }
     }
     const fresh = { ...createInitialGameState(), roomId };
@@ -105,7 +109,8 @@ export default function App() {
   const historyRef = useRef<GameState[]>([]);
 
   const hydrateQuestion = useCallback((incoming: GameState): GameState => {
-    const source = INITIAL_QUESTIONS.find((q) => q.id === incoming.currentQuestion?.id);
+    const localQuestion = gameStateRef.current?.currentQuestion;
+    const source = [localQuestion, ...QUESTION_BATCH_01, ...INITIAL_QUESTIONS].find((q) => q?.id === incoming.currentQuestion?.id);
     if (!source || screenMode !== 'host') return normalizeLoadedState(incoming);
     return normalizeLoadedState({ ...incoming, currentQuestion: source });
   }, [screenMode]);
@@ -121,8 +126,9 @@ export default function App() {
 
   // Fetch initial remote state from server
   useEffect(() => {
+    if (screenMode !== 'audience') return;
     fetchRemoteState(roomId).then((remote) => {
-      if (remote) {
+      if (remote && (!remote.roomId || remote.roomId === roomId)) {
         setGameState(hydrateQuestion(remote));
       }
     });
@@ -130,6 +136,7 @@ export default function App() {
 
   // Subscribe to BroadcastChannel & Server-Sent Events (SSE)
   useEffect(() => {
+    if (screenMode !== 'audience') return;
     const unsubscribe = subscribeToSync((msg: GameSyncMessage) => {
       if (msg.type === 'STATE_UPDATE' && msg.state) {
         setGameState((prev) => {
@@ -147,7 +154,7 @@ export default function App() {
     return () => {
       unsubscribe();
     };
-  }, [roomId, hydrateQuestion]);
+  }, [roomId, hydrateQuestion, screenMode]);
 
   // WebRTC P2P Serverless Direct Sync (Zero-server sync for GitHub Pages and Phone ➔ TV)
   useEffect(() => {
@@ -159,6 +166,7 @@ export default function App() {
         setP2pPeerCount(count);
       },
       onStateUpdate: (remoteState) => {
+        if (remoteState.roomId && remoteState.roomId !== roomId) return;
         setGameState((prev) => {
           if (remoteState.lastUpdated && prev.lastUpdated && remoteState.lastUpdated <= prev.lastUpdated) {
             return prev;
@@ -200,8 +208,8 @@ export default function App() {
 
   useEffect(() => {
     if (screenMode !== 'host') return;
-    try { localStorage.setItem('family_feud_host_private_state', JSON.stringify(gameState)); } catch { /* storage may be unavailable */ }
-  }, [gameState, screenMode]);
+    try { localStorage.setItem(`family_feud_host_private_state:${encodeURIComponent(roomId)}`, JSON.stringify(gameState)); } catch { /* storage may be unavailable */ }
+  }, [gameState, screenMode, roomId]);
 
   // Sound trigger that plays locally and broadcasts to all devices
   const triggerSound = useCallback(
@@ -304,7 +312,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-amber-500 selection:text-slate-950">
       {/* Top Floating View Switcher Bar */}
-      {!isTvCleanMode ? (
+      {!isTvCleanMode && !['/play', '/host'].includes(window.location.pathname) ? (
         <nav className="sticky top-0 z-40 flex flex-wrap items-center justify-between border-b border-amber-500/20 bg-slate-950/95 px-3 md:px-5 py-2 backdrop-blur-md gap-2">
           <div className="flex items-center gap-2 sm:gap-3">
             <span className="font-display font-extrabold text-amber-400 text-sm hidden sm:inline">
@@ -370,7 +378,7 @@ export default function App() {
             </button>
           </div>
         </nav>
-      ) : (
+      ) : isTvCleanMode && !['/play', '/host'].includes(window.location.pathname) ? (
         /* Discreet floating buttons in TV mode */
         <div className="fixed top-2 left-2 z-50 flex items-center gap-2 opacity-25 hover:opacity-100 transition-opacity">
           <button
@@ -387,7 +395,7 @@ export default function App() {
             ⚙️ إظهار الشريط
           </button>
         </div>
-      )}
+      ) : null}
 
       {/* Screen Views */}
       {screenMode === 'audience' ? (

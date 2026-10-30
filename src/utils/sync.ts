@@ -1,26 +1,16 @@
 import { GameState, GameSyncMessage } from '../types/game';
 import { broadcastP2PMessage } from './p2pSync';
+import { toAudienceState } from './audienceState';
+export { toAudienceState } from './audienceState';
 
 const CHANNEL_NAME = 'family_feud_sync_channel';
-const STORAGE_KEY = 'family_feud_saved_state';
-const SOUND_STORAGE_KEY = 'family_feud_sound_event';
+const LEGACY_STORAGE_KEY = 'family_feud_saved_state';
 const CUSTOM_SYNC_SERVER_KEY = 'feud_sync_server_url';
+const privateStateKey = (roomId: string) => `family_feud_saved_state:${encodeURIComponent(roomId)}`;
+const publicStateKey = (roomId: string) => `family_feud_public_state:${encodeURIComponent(roomId)}`;
+const soundEventKey = (roomId: string) => `family_feud_sound_event:${encodeURIComponent(roomId)}`;
 
 let broadcastChannel: BroadcastChannel | null = null;
-
-/** Audience-safe state: hidden answer text and points never leave the host. */
-export function toAudienceState(state: GameState): GameState {
-  if (!state.currentQuestion) return state;
-  return {
-    ...state,
-    currentQuestion: {
-      ...state.currentQuestion,
-      answers: state.currentQuestion.answers.map((answer, index) =>
-        state.revealedAnswers[index] ? answer : { text: '', points: 0 }
-      ),
-    },
-  };
-}
 
 try {
   if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -52,20 +42,38 @@ export function getSyncServerUrl(): string {
 
 export function saveGameStateToStorage(state: GameState) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    localStorage.setItem(privateStateKey(state.roomId || 'FEUD'), JSON.stringify(state));
   } catch (e) {
     console.error('Failed to save state to localStorage', e);
   }
 }
 
-export function loadGameStateFromStorage(): GameState | null {
+export function loadGameStateFromStorage(roomId: string): GameState | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      return JSON.parse(raw);
+    const scoped = localStorage.getItem(privateStateKey(roomId));
+    if (scoped) return JSON.parse(scoped) as GameState;
+    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (legacy) {
+      const state = JSON.parse(legacy) as GameState;
+      if (!state.roomId || state.roomId === roomId) return state;
     }
   } catch (e) {
     console.error('Failed to load state from localStorage', e);
+  }
+  return null;
+}
+
+export function loadAudienceStateFromStorage(roomId: string): GameState | null {
+  try {
+    const scoped = localStorage.getItem(publicStateKey(roomId));
+    if (scoped) return JSON.parse(scoped) as GameState;
+    const legacy = localStorage.getItem('family_feud_public_state');
+    if (legacy) {
+      const state = JSON.parse(legacy) as GameState;
+      if (!state.roomId || state.roomId === roomId) return state;
+    }
+  } catch {
+    // Ignore unavailable or malformed local persistence.
   }
   return null;
 }
@@ -82,7 +90,7 @@ export function broadcastGameState(state: GameState, roomId: string = 'FEUD') {
   const publicState = toAudienceState(state);
   const msg: GameSyncMessage = { type: 'STATE_UPDATE', state: publicState };
 
-  try { localStorage.setItem('family_feud_public_state', JSON.stringify(publicState)); } catch { /* Storage may be unavailable. */ }
+  try { localStorage.setItem(publicStateKey(roomId), JSON.stringify(publicState)); } catch { /* Storage may be unavailable. */ }
   if (broadcastChannel) {
     try { broadcastChannel.postMessage(msg); } catch { /* channel may be unavailable */ }
   }
@@ -136,7 +144,7 @@ export function broadcastSound(
   sound: 'chime' | 'strike' | 'bell' | 'tick' | 'duplicate' | 'applause' | 'fanfare' | 'steal',
   roomId: string = 'FEUD'
 ) {
-  const msg: GameSyncMessage = { type: 'TRIGGER_SOUND', sound };
+  const msg: GameSyncMessage = { type: 'TRIGGER_SOUND', sound, roomId };
 
   if (broadcastChannel) {
     try {
@@ -145,6 +153,8 @@ export function broadcastSound(
       // ignore
     }
   }
+
+  try { localStorage.setItem(soundEventKey(roomId), JSON.stringify({ sound, roomId, at: Date.now() })); } catch { /* Storage may be unavailable. */ }
 
   // WebRTC P2P direct sound trigger
   broadcastP2PMessage(msg);
@@ -204,7 +214,10 @@ export function subscribeToSync(
   // 1. BroadcastChannel Listener
   const channelListener = (event: MessageEvent) => {
     if (event.data) {
-      onMessage(event.data as GameSyncMessage);
+      const message = event.data as GameSyncMessage;
+      if (message.type === 'STATE_UPDATE' && message.state?.roomId && message.state.roomId !== roomId) return;
+      if (message.type === 'TRIGGER_SOUND' && message.roomId && message.roomId !== roomId) return;
+      onMessage(message);
     }
   };
 
@@ -216,18 +229,18 @@ export function subscribeToSync(
   let storageListener: ((e: StorageEvent) => void) | null = null;
   if (!broadcastChannel && role === 'audience') {
     storageListener = (e: StorageEvent) => {
-      if (e.key === 'family_feud_public_state' && e.newValue) {
+      if (e.key === publicStateKey(roomId) && e.newValue) {
         try {
           const state = JSON.parse(e.newValue) as GameState;
           onMessage({ type: 'STATE_UPDATE', state });
         } catch {
           // ignore
         }
-      } else if (e.key === SOUND_STORAGE_KEY && e.newValue) {
+      } else if (e.key === soundEventKey(roomId) && e.newValue) {
         try {
           const data = JSON.parse(e.newValue);
-          if (data.sound) {
-            onMessage({ type: 'TRIGGER_SOUND', sound: data.sound });
+          if (data.sound && (!data.roomId || data.roomId === roomId)) {
+            onMessage({ type: 'TRIGGER_SOUND', sound: data.sound, roomId });
           }
         } catch {
           // ignore
@@ -250,10 +263,10 @@ export function subscribeToSync(
         consecutiveErrors = 0;
         try {
           const parsed = JSON.parse(event.data);
-          if (parsed.type === 'STATE_UPDATE' && parsed.state) {
+          if (parsed.type === 'STATE_UPDATE' && parsed.state && (!parsed.state.roomId || parsed.state.roomId === roomId)) {
             onMessage({ type: 'STATE_UPDATE', state: parsed.state as GameState });
-          } else if (parsed.type === 'TRIGGER_SOUND' && parsed.sound) {
-            onMessage({ type: 'TRIGGER_SOUND', sound: parsed.sound });
+          } else if (parsed.type === 'TRIGGER_SOUND' && parsed.sound && (!parsed.roomId || parsed.roomId === roomId)) {
+            onMessage({ type: 'TRIGGER_SOUND', sound: parsed.sound, roomId });
           }
         } catch {
           // ignore

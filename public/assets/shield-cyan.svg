@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 300" role="img" aria-labelledby="title">
+ <title id="title">درع الفريق الأزرق</title>
+ <defs>
+  <linearGradient id="shell" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#72f4ff"/><stop offset=".2" stop-color="#168dff"/><stop offset=".55" stop-color="#0751c8"/><stop offset=".82" stop-color="#092e78"/><stop offset="1" stop-color="#38d9ff"/></linearGradient>
+  <linearGradient id="gold" x1="0" y1="0" x2=".9" y2="1"><stop stop-color="#fff8b0"/><stop offset=".28" stop-color="#ffc83d"/><stop offset=".65" stop-color="#e18a16"/><stop offset="1" stop-color="#fff09a"/></linearGradient>
+  <linearGradient id="face" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#185bc3"/><stop offset=".48" stop-color="#102d70"/><stop offset="1" stop-color="#06153f"/></linearGradient>
+  <filter id="shadow" x="-30%" y="-20%" width="160%" height="160%"><feGaussianBlur in="SourceAlpha" stdDeviation="7"/><feOffset dy="9"/><feComponentTransfer><feFuncA type="linear" slope=".55"/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  <pattern id="grain" width="12" height="12" patternUnits="userSpaceOnUse"><path d="M0 12 12 0" stroke="#a8f7ff" stroke-opacity=".09"/></pattern>
+ </defs>
+ <g filter="url(#shadow)">
+  <path d="M128 12 235 51v85c0 67-39 112-107 150C60 248 21 203 21 136V51z" fill="#071846" stroke="#ffe69a" stroke-width="12" stroke-linejoin="round"/>
+  <path d="M128 25 222 59v76c0 59-33 99-94 135-61-36-94-76-94-135V59z" fill="url(#shell)" stroke="url(#gold)" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M128 44 203 71v64c0 48-25 81-75 112-50-31-75-64-75-112V71z" fill="url(#face)" stroke="#7beeff" stroke-opacity=".85" stroke-width="3"/>
+  <path d="M128 44 203 71v64c0 48-25 81-75 112z" fill="url(#grain)" opacity=".65"/>
+  <path d="m128 67 10 29 31 1-24 19 9 29-26-17-26 17 9-29-24-19 31-1z" fill="url(#gold)" stroke="#fff6bd" stroke-width="2" stroke-linejoin="round"/>
+  <path d="m84 174 44 31 44-31" fill="none" stroke="#44dfff" stroke-width="6" stroke-linecap="round" opacity=".95"/>
+  <path d="M37 73 59 63M219 73l-22-10" stroke="#fff" stroke-width="4" stroke-linecap="round" opacity=".8"/>
+  <circle cx="128" cy="257" r="5" fill="#fff6bd"/>
+ </g>
+</svg>

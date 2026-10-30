@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { GameState, Question } from '../types/game';
-import { INITIAL_QUESTIONS } from '../data/questions';
+import { QUESTION_BATCH_01 } from '../data/questionBatch01';
 import { getMultiplierForRound, pickNewQuestion } from '../utils/gameDefaults';
 import { AnimatedCounter } from './AnimatedCounter';
-import { awardRound, completeGame, getTimerRemaining } from '../utils/gameEngine';
+import { awardRound, completeGame, getTimerRemaining, resolveSteal } from '../utils/gameEngine';
 
 interface HostControllerProps {
   state: GameState;
@@ -29,16 +29,19 @@ export function HostController({
   canUndo = false,
 }: HostControllerProps) {
   const [questionBank, setQuestionBank] = useState<Question[]>(() => {
-    try { const saved = localStorage.getItem('family_feud_questions_v2'); return saved ? JSON.parse(saved) as Question[] : INITIAL_QUESTIONS; }
-    catch { return INITIAL_QUESTIONS; }
+    try { const saved = localStorage.getItem('family_feud_questions_v3'); return saved ? JSON.parse(saved) as Question[] : QUESTION_BATCH_01; }
+    catch { return QUESTION_BATCH_01; }
   });
   const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
   const [bankMessage, setBankMessage] = useState('');
   const importRef = useRef<HTMLInputElement>(null);
+  const brandFileRef = useRef<HTMLInputElement>(null);
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showQuestionsDrawer, setShowQuestionsDrawer] = useState<boolean>(false);
   const [showTeamEditModal, setShowTeamEditModal] = useState<boolean>(false);
+  const [showBrandSettings, setShowBrandSettings] = useState(false);
+  const [brandMessage, setBrandMessage] = useState('');
   const [showEventLog, setShowEventLog] = useState(false);
   const [eventLog, setEventLog] = useState<Array<{ id: number; label: string; time: string }>>([]);
   const [clockNow, setClockNow] = useState(Date.now());
@@ -63,14 +66,7 @@ export function HostController({
     });
   }, [state.actionId, state.phase, state.strikes, state.lastUpdated]);
 
-  const categories = [
-    'الكل',
-    'مواقف وحياة يومية',
-    'العائلة والطفولة والبيت',
-    'الطعام والطبخ والمطاعم',
-    'تكنولوجيا وشبكات التواصل',
-    'السفر، العمل والوظائف',
-  ];
+  const categories = ['الكل', ...new Set(questionBank.map((question) => question.category))];
 
   // Interactive Haptic Feedback for Mobile Remote Pro
   const triggerHaptic = (pattern: number | number[] = 50) => {
@@ -176,18 +172,8 @@ export function HostController({
   const handleResolveSteal = (success: boolean) => {
     if (state.phase !== 'STEAL') return;
     triggerHaptic(success ? [70, 40, 120] : [120, 60, 120]);
-    if (success) {
-      updateState((prev) => {
-        const beneficiary = prev.stealTeam || (prev.activeTeam === 'A' ? 'B' : 'A');
-        return awardRound(prev, beneficiary);
-      });
-    } else {
-      triggerSound('strike');
-      updateState((prev) => {
-        const beneficiary = prev.originalTeam || prev.activeTeam || 'A';
-        return awardRound(prev, beneficiary);
-      });
-    }
+    triggerSound(success ? 'steal' : 'strike');
+    updateState((prev) => resolveSteal(prev, success));
   };
 
   // Next Round / Next Question
@@ -253,7 +239,7 @@ export function HostController({
 
   const persistQuestionBank = (next: Question[]) => {
     setQuestionBank(next);
-    try { localStorage.setItem('family_feud_questions_v2', JSON.stringify(next)); } catch { setBankMessage('تعذر حفظ البنك على هذا الجهاز'); }
+    try { localStorage.setItem('family_feud_questions_v3', JSON.stringify(next)); } catch { setBankMessage('تعذر حفظ البنك على هذا الجهاز'); }
   };
 
   const exportQuestionBank = (format: 'json' | 'csv') => {
@@ -322,7 +308,7 @@ export function HostController({
   });
 
   return (
-    <div className="host-console min-h-screen bg-slate-950 text-slate-100 p-3 md:p-6 pb-24">
+    <div className={`host-console host-station host-phase-${state.phase.toLowerCase().replace('_', '-')} min-h-screen bg-slate-950 text-slate-100 p-3 md:p-6 pb-24`} dir="rtl">
       {/* Top Header: Logos & Primary Navigation */}
       <header className="host-header mx-auto max-w-4xl flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4 mb-4">
         <div className="flex items-center gap-3">
@@ -334,6 +320,7 @@ export function HostController({
         {/* Clear Action Buttons */}
         <div className="flex flex-wrap items-center gap-2">
           <button onClick={() => setShowEventLog(true)} className="rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-black text-slate-200">سجل المباراة</button>
+          <button aria-label="إدارة هوية البرنامج" title="إدارة هوية البرنامج" onClick={() => setShowBrandSettings(true)} className="host-brand-shortcut rounded-xl border border-amber-400/50 bg-blue-950 px-3 py-2 text-xs font-black text-amber-100">✦ <span>الهوية</span></button>
           <button
             onClick={onUndo}
             disabled={!canUndo}
@@ -379,7 +366,7 @@ export function HostController({
       <main className="host-main mx-auto max-w-4xl space-y-4">
         {/* P2P Live Connection Status Badge */}
         <div
-          className={`flex items-center justify-between px-3.5 py-2 rounded-2xl border text-xs font-bold transition-all shadow-sm ${
+          className={`host-connection flex items-center justify-between px-3.5 py-2 rounded-2xl border text-xs font-bold transition-all shadow-sm ${
             p2pConnected
               ? 'bg-emerald-950/70 border-emerald-500/60 text-emerald-300 shadow-[0_0_15px_rgba(16,185,129,0.2)]'
               : 'bg-amber-950/70 border-amber-500/60 text-amber-300 shadow-[0_0_15px_rgba(245,158,11,0.2)]'
@@ -403,11 +390,14 @@ export function HostController({
         </div>
 
         {/* 1. Scoreboard Bar with Animated Counters */}
-        <div className="grid grid-cols-3 gap-2 sm:gap-4 text-center">
+        <div className="host-scoreboard grid grid-cols-3 gap-2 sm:gap-4 text-center">
           {/* Team A */}
           <div
+            role="button"
+            tabIndex={0}
             onClick={() => handleSetTurn('A')}
-            className={`cursor-pointer rounded-2xl border-2 p-3 transition-all ${
+            onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') handleSetTurn('A'); }}
+            className={`host-team-card host-team-a cursor-pointer rounded-2xl border-2 p-3 transition-all ${
               state.activeTeam === 'A'
                 ? 'border-amber-400 bg-blue-950/80 shadow-[0_0_20px_rgba(251,191,36,0.4)] scale-[1.02]'
                 : 'border-slate-800 bg-slate-900/60'
@@ -423,7 +413,7 @@ export function HostController({
           </div>
 
           {/* Round Bank */}
-          <div className="rounded-2xl border-2 border-amber-400/80 bg-amber-950/30 p-3 shadow-[0_0_20px_rgba(245,158,11,0.2)]">
+          <div className="host-bank-card rounded-2xl border-2 border-amber-400/80 bg-amber-950/30 p-3 shadow-[0_0_20px_rgba(245,158,11,0.2)]">
             <span className="text-[11px] md:text-xs font-black text-amber-300 uppercase block">
               بنك الجولة {state.currentRound}/4 {state.roundMultiplier > 1 ? `(×${state.roundMultiplier})` : ''}
             </span>
@@ -434,8 +424,11 @@ export function HostController({
 
           {/* Team B */}
           <div
+            role="button"
+            tabIndex={0}
             onClick={() => handleSetTurn('B')}
-            className={`cursor-pointer rounded-2xl border-2 p-3 transition-all ${
+            onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') handleSetTurn('B'); }}
+            className={`host-team-card host-team-b cursor-pointer rounded-2xl border-2 p-3 transition-all ${
               state.activeTeam === 'B'
                 ? 'border-amber-400 bg-blue-950/80 shadow-[0_0_20px_rgba(251,191,36,0.4)] scale-[1.02]'
                 : 'border-slate-800 bg-slate-900/60'
@@ -486,7 +479,7 @@ export function HostController({
               onClick={() => setShowQuestionsDrawer(true)}
               className="rounded-xl bg-blue-900/60 border border-blue-400/40 px-3 py-1.5 text-xs font-bold text-blue-200 hover:bg-blue-800 active:scale-95 transition-all"
             >
-              📚 تغيير السؤال (بنك 105)
+              📚 بنك الأسئلة ({questionBank.length})
             </button>
           </div>
 
@@ -495,14 +488,14 @@ export function HostController({
           </h2>
 
           {/* 3. Answers Cards - Ergonomic Touch-Friendly for Phone Thumb */}
-          <div className="mt-4 space-y-3">
+          <div className="host-answer-list mt-4 space-y-3">
             {state.currentQuestion?.answers.map((answer, index) => {
               const isRevealed = Boolean(state.revealedAnswers[index]);
               return (
                 <div
                   key={index}
                   onClick={() => handleRevealAnswer(index)}
-                  className={`cursor-pointer flex items-center justify-between rounded-2xl border-2 p-3 sm:p-4 min-h-[64px] active:scale-[0.99] transition-all select-none ${
+                  className={`host-answer-row cursor-pointer flex items-center justify-between rounded-2xl border-2 p-3 sm:p-4 min-h-[64px] active:scale-[0.99] transition-all select-none ${
                     isRevealed
                       ? 'border-emerald-400/90 bg-emerald-950/70 shadow-[0_0_20px_rgba(16,185,129,0.35)]'
                       : 'border-slate-700/80 bg-slate-900/95 hover:border-amber-400/60 hover:bg-slate-800/90 shadow-md'
@@ -558,16 +551,16 @@ export function HostController({
 
         {/* 4. Giant Strike Button & Steal Actions (Touch-Friendly) */}
         <div className="host-actions rounded-3xl border border-slate-800 bg-slate-900/90 p-4 space-y-3">
-          <div className="mobile-turn-controls hidden items-center gap-2">
+          <div className="mobile-turn-controls host-turn-row hidden items-center gap-2">
             <button onClick={handlePassTurn} className="flex-1 rounded-xl border border-cyan-400/50 bg-cyan-900/50 px-3 py-2 text-xs font-black text-cyan-100">⇄ نقل الدور</button>
             <button onClick={() => onUndo?.()} disabled={!canUndo} className="rounded-xl border border-slate-600 bg-slate-800 px-4 py-2 text-xs font-black disabled:opacity-40">↶ تراجع</button>
           </div>
           {/* Big Red Strike Button */}
-          <div className="flex items-center gap-2">
+          <div className="host-strike-row flex items-center gap-2">
             <button
               onClick={handleStrike}
               disabled={state.strikes >= 3 || state.phase === 'ROUND_OVER' || state.phase === 'GAME_OVER'}
-              className="flex-1 flex items-center justify-center gap-3 rounded-2xl border-3 border-red-500 bg-gradient-to-b from-red-600 to-red-800 min-h-[64px] py-3.5 px-6 font-display font-black text-xl text-white shadow-[0_0_35px_rgba(239,68,68,0.55)] active:scale-95 hover:brightness-110 transition-all"
+              className="host-strike-button flex-1 flex items-center justify-center gap-3 rounded-2xl border-3 border-red-500 bg-gradient-to-b from-red-600 to-red-800 min-h-[64px] py-3.5 px-6 font-display font-black text-xl text-white shadow-[0_0_35px_rgba(239,68,68,0.55)] active:scale-95 hover:brightness-110 transition-all"
             >
               <span className="text-3xl leading-none">❌</span>
               <span>تسجيل خطأ ({state.strikes} من 3)</span>
@@ -584,7 +577,7 @@ export function HostController({
 
           {/* Steal Banner if 3 Strikes */}
           {state.phase === 'STEAL' && (
-            <div className="rounded-2xl border-2 border-red-500 bg-red-950/60 p-3.5 text-center animate-pulse">
+            <div className="host-steal-panel rounded-2xl border-2 border-red-500 bg-red-950/60 p-3.5 text-center animate-pulse">
               <span className="font-display font-bold text-sm md:text-base text-red-200 block mb-2">
                 ⚡ فرصة سرقة النقاط (الفريق المتشاور: {state.stealTeam === 'A' ? state.teamA.name : state.teamB.name})
               </span>
@@ -606,7 +599,7 @@ export function HostController({
           )}
 
           {/* 5. Awarding Points to Team A or B */}
-          <div className="rounded-2xl border border-slate-800 bg-slate-950 p-3">
+          <div className="host-award-panel rounded-2xl border border-slate-800 bg-slate-950 p-3">
             <span className="text-xs text-slate-400 font-bold block mb-2 text-center">
               تحويل نقاط بنك الجولة ({state.roundBank} نقطة) إلى:
             </span>
@@ -629,7 +622,7 @@ export function HostController({
           </div>
 
           {/* 6. Advance to Next Round */}
-          <div className="flex items-center gap-2 pt-1">
+          <div className="host-round-controls flex items-center gap-2 pt-1">
           <button
             onClick={handleNextRound}
             disabled={state.currentRound >= 4 || state.phase !== 'ROUND_OVER'}
@@ -755,6 +748,25 @@ export function HostController({
         </div>
       )}
 
+      {showBrandSettings && <div className="brand-settings-backdrop" role="dialog" aria-modal="true" aria-labelledby="brand-settings-title" dir="rtl">
+        <section className="brand-settings-card">
+          <header><div><small>إدارة الهوية البصرية</small><h2 id="brand-settings-title">شعار شاشة الجمهور</h2></div><button type="button" onClick={() => setShowBrandSettings(false)} aria-label="إغلاق">×</button></header>
+          <img className="brand-settings-preview" src={state.brandLogoDataUrl || '/family-challenge-logo.svg'} alt="معاينة الشعار الحالي" />
+          <p>ارفع PNG بخلفية شفافة أو SVG متجهيًا آمنًا. سيظهر الشعار على شاشة الجمهور عند المزامنة.</p>
+          <input ref={brandFileRef} type="file" accept="image/png,image/svg+xml,.png,.svg" hidden onChange={async (event) => {
+            const file = event.currentTarget.files?.[0]; event.currentTarget.value = '';
+            if (!file) return;
+            try {
+              const dataUrl = await loadBrandLogo(file);
+              updateState((prev) => ({ ...prev, brandLogoDataUrl: dataUrl }));
+              setBrandMessage('تم تحديث الشعار ومزامنته.');
+            } catch (error) { setBrandMessage(error instanceof Error ? error.message : 'تعذر تحميل الشعار.'); }
+          }} />
+          <footer><button type="button" className="brand-upload" onClick={() => brandFileRef.current?.click()}>اختيار PNG أو SVG</button><button type="button" className="brand-reset" onClick={() => { updateState((prev) => ({ ...prev, brandLogoDataUrl: undefined })); setBrandMessage(''); }}>استعادة الشعار الأصلي</button></footer>
+          {brandMessage && <div className="brand-message" role="status">{brandMessage}</div>}
+        </section>
+      </div>}
+
       {editingQuestion && (
         <QuestionEditor
           question={editingQuestion}
@@ -824,6 +836,28 @@ export function HostController({
       )}
     </div>
   );
+}
+
+async function loadBrandLogo(file: File): Promise<string> {
+  if (file.size > 3 * 1024 * 1024) throw new Error('حجم الملف الأقصى 3 ميغابايت.');
+  if (file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg')) {
+    if (file.size > 120 * 1024) throw new Error('حجم SVG الأقصى 120 كيلوبايت.');
+    const source = await file.text();
+    const withoutStandardNamespace = source.replace(/xmlns=["']http:\/\/www\.w3\.org\/2000\/svg["']/gi, '');
+    if (!/<svg[\s>]/i.test(source) || /<(script|foreignObject|iframe|object|embed|image|use)\b/i.test(source) || /\bon[a-z]+\s*=|javascript:|url\s*\(|@import|https?:\/\/|<!DOCTYPE|<!ENTITY/i.test(withoutStandardNamespace) || /\b(?:href|src)\s*=\s*["'](?!#)/i.test(source)) {
+      throw new Error('ملف SVG يجب أن يكون رسماً متجهياً محلياً بلا سكربتات أو روابط خارجية.');
+    }
+    return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(source)))}`;
+  }
+  if (file.type !== 'image/png' && !file.name.toLowerCase().endsWith('.png')) throw new Error('اختر ملف PNG أو SVG.');
+  const source = await createImageBitmap(file);
+  const scale = Math.min(1, 640 / Math.max(source.width, source.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(source.width * scale)); canvas.height = Math.max(1, Math.round(source.height * scale));
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('تعذر تجهيز الصورة.');
+  context.drawImage(source, 0, 0, canvas.width, canvas.height); source.close();
+  return canvas.toDataURL('image/webp', .88);
 }
 
 function QuestionEditor({ question, onChange, onCancel, onSave }: { question: Question; onChange: (question: Question) => void; onCancel: () => void; onSave: (question: Question) => void }) {
