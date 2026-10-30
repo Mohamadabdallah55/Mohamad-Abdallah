@@ -8,6 +8,20 @@ const CUSTOM_SYNC_SERVER_KEY = 'feud_sync_server_url';
 
 let broadcastChannel: BroadcastChannel | null = null;
 
+/** Audience-safe state: hidden answer text and points never leave the host. */
+export function toAudienceState(state: GameState): GameState {
+  if (!state.currentQuestion) return state;
+  return {
+    ...state,
+    currentQuestion: {
+      ...state.currentQuestion,
+      answers: state.currentQuestion.answers.map((answer, index) =>
+        state.revealedAnswers[index] ? answer : { text: '', points: 0 }
+      ),
+    },
+  };
+}
+
 try {
   if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
     broadcastChannel = new BroadcastChannel(CHANNEL_NAME);
@@ -65,7 +79,8 @@ let broadcastTimeout: ReturnType<typeof setTimeout> | null = null;
  */
 export function broadcastGameState(state: GameState, roomId: string = 'FEUD') {
   saveGameStateToStorage(state);
-  const msg: GameSyncMessage = { type: 'STATE_UPDATE', state };
+  const publicState = toAudienceState(state);
+  const msg: GameSyncMessage = { type: 'STATE_UPDATE', state: publicState };
 
   // 1. Instant local broadcast (tabs on the same browser)
   if (broadcastChannel) {
@@ -85,7 +100,7 @@ export function broadcastGameState(state: GameState, roomId: string = 'FEUD') {
 
   const now = Date.now();
   if (now - lastBroadcastTime < 150) {
-    pendingBroadcastState = { state, roomId };
+    pendingBroadcastState = { state: publicState, roomId };
     if (!broadcastTimeout) {
       broadcastTimeout = setTimeout(() => {
         broadcastTimeout = null;
@@ -101,7 +116,7 @@ export function broadcastGameState(state: GameState, roomId: string = 'FEUD') {
   }
 
   lastBroadcastTime = now;
-  sendServerState(state, roomId, serverBase);
+  sendServerState(publicState, roomId, serverBase);
 }
 
 function sendServerState(state: GameState, roomId: string, serverBase: string) {

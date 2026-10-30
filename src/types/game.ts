@@ -3,11 +3,16 @@ export interface AnswerItem {
   points: number;
 }
 
+export type PointsSource = 'estimated' | 'survey';
+
 export interface Question {
   id: number;
   category: string;
   questionText: string;
   answers: AnswerItem[];
+  difficulty?: 'easy' | 'medium' | 'hard';
+  pointsSource?: PointsSource;
+  sourceNote?: string;
 }
 
 export interface Team {
@@ -40,6 +45,13 @@ export interface GameState {
   stealTeam: 'A' | 'B' | null;
   strikeOverlayActive: boolean;
   strikeOverlayCount: number;
+  timerSeconds: number;
+  timerRunning: boolean;
+  timerEndsAt: number | null;
+  volume: number;
+  muted: boolean;
+  awardedRound: number | null;
+  actionId: number;
   roomId?: string;
   lastUpdated: number;
 }

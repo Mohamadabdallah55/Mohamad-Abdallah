@@ -35,6 +35,13 @@ export function createInitialGameState(): GameState {
     stealTeam: null,
     strikeOverlayActive: false,
     strikeOverlayCount: 0,
+    timerSeconds: 30,
+    timerRunning: false,
+    timerEndsAt: null,
+    volume: 0.8,
+    muted: false,
+    awardedRound: null,
+    actionId: 0,
     lastUpdated: Date.now(),
   };
 }

@@ -1,6 +1,5 @@
 import { Team } from '../types/game';
 import { Confetti } from './Confetti';
-import { IbnTaymiyyahLogo } from './IbnTaymiyyahLogo';
 
 interface GrandWinnerModalProps {
   winner: 'A' | 'B' | 'TIE';
@@ -32,7 +31,6 @@ export function GrandWinnerModal({
       <div className="relative z-10 w-full max-w-2xl rounded-[40px] border-4 border-amber-400 bg-gradient-to-b from-blue-950 via-slate-950 to-blue-950 p-6 md:p-10 text-center shadow-[0_0_80px_rgba(245,158,11,0.8),inset_0_2px_20px_rgba(255,255,255,0.4)] animate-strike">
         {/* Top Mosque Logo + Trophy */}
         <div className="flex items-center justify-center gap-4 mb-4">
-          <IbnTaymiyyahLogo className="h-16 w-16 md:h-20 md:w-20" />
           <div className="flex h-20 w-20 md:h-24 md:w-24 items-center justify-center rounded-3xl border-3 border-amber-400 bg-gradient-to-b from-amber-400 to-amber-600 text-4xl md:text-5xl shadow-[0_0_30px_rgba(251,191,36,0.8)] animate-bounce">
             🏆
           </div>
@@ -40,7 +38,7 @@ export function GrandWinnerModal({
 
         {/* Grand Title */}
         <span className="inline-block rounded-full border border-amber-400/80 bg-amber-500/20 px-5 py-1 text-xs md:text-sm font-black text-amber-300 uppercase tracking-widest mb-2 shadow-[0_0_15px_rgba(245,158,11,0.4)]">
-          مسجد ابن تيمية · ختام المسابقة الكبير
+          ختام تحدّي العائلة
         </span>
 
         {isTie ? (
@@ -55,7 +53,7 @@ export function GrandWinnerModal({
         ) : (
           <div>
             <h3 className="font-display font-black text-xl md:text-2xl text-amber-200 mb-1">
-              🏆 تتويج بطل مسابقة فاميلي فيود 🏆
+              🏆 بطل المسابقة 🏆
             </h3>
             {/* Giant Winning Team Name */}
             <div className="my-4 py-2">

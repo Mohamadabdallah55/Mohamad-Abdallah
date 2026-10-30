@@ -1,12 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { GameState, GameSyncMessage } from './types/game';
 import { createInitialGameState } from './utils/gameDefaults';
+import { normalizeLoadedState } from './utils/gameEngine';
+import { INITIAL_QUESTIONS } from './data/questions';
 import {
   broadcastGameState,
   broadcastSound,
   fetchRemoteState,
   loadGameStateFromStorage,
   subscribeToSync,
+  toAudienceState,
 } from './utils/sync';
 import { playSound } from './utils/audio';
 import { initP2PSync } from './utils/p2pSync';
@@ -46,7 +49,7 @@ export default function App() {
       const params = new URLSearchParams(window.location.search);
       const mode = params.get('mode') || params.get('screen');
       const hash = window.location.hash.toLowerCase();
-      if (mode === 'remote' || mode === 'host' || mode === 'controller' || hash === '#remote') return 'host';
+      if (window.location.pathname.startsWith('/host') || mode === 'remote' || mode === 'host' || mode === 'controller' || hash === '#remote') return 'host';
       if (mode === 'audience' || mode === 'tv' || mode === 'display') return 'audience';
     }
     return 'audience';
@@ -77,9 +80,24 @@ export default function App() {
 
   const [gameState, setGameState] = useState<GameState>(() => {
     const saved = loadGameStateFromStorage();
-    if (saved) return { ...saved, roomId };
+    if (saved) {
+      const normalized = normalizeLoadedState({ ...saved, roomId });
+      return screenMode === 'audience' ? toAudienceState(normalized) : normalized;
+    }
     return { ...createInitialGameState(), roomId };
   });
+
+  const historyRef = useRef<GameState[]>([]);
+
+  const hydrateQuestion = useCallback((incoming: GameState): GameState => {
+    const source = INITIAL_QUESTIONS.find((q) => q.id === incoming.currentQuestion?.id);
+    if (!source || screenMode !== 'host') return normalizeLoadedState(incoming);
+    return normalizeLoadedState({ ...incoming, currentQuestion: source });
+  }, [screenMode]);
+
+  useEffect(() => {
+    setGameState((current) => screenMode === 'host' ? hydrateQuestion(current) : toAudienceState(current));
+  }, [screenMode, hydrateQuestion]);
 
   const gameStateRef = useRef(gameState);
   useEffect(() => {
@@ -90,10 +108,10 @@ export default function App() {
   useEffect(() => {
     fetchRemoteState(roomId).then((remote) => {
       if (remote) {
-        setGameState(remote);
+        setGameState(hydrateQuestion(remote));
       }
     });
-  }, [roomId]);
+  }, [roomId, hydrateQuestion]);
 
   // Subscribe to BroadcastChannel & Server-Sent Events (SSE)
   useEffect(() => {
@@ -104,7 +122,7 @@ export default function App() {
           if (msg.state.lastUpdated && prev.lastUpdated && msg.state.lastUpdated <= prev.lastUpdated) {
             return prev;
           }
-          return msg.state;
+          return hydrateQuestion(msg.state);
         });
       } else if (msg.type === 'TRIGGER_SOUND') {
         playSound(msg.sound);
@@ -114,7 +132,7 @@ export default function App() {
     return () => {
       unsubscribe();
     };
-  }, [roomId]);
+  }, [roomId, hydrateQuestion]);
 
   // WebRTC P2P Serverless Direct Sync (Zero-server sync for GitHub Pages and Phone ➔ TV)
   useEffect(() => {
@@ -130,7 +148,7 @@ export default function App() {
           if (remoteState.lastUpdated && prev.lastUpdated && remoteState.lastUpdated <= prev.lastUpdated) {
             return prev;
           }
-          return remoteState;
+          return hydrateQuestion(remoteState);
         });
       },
       onSoundTrigger: (sound) => {
@@ -141,20 +159,31 @@ export default function App() {
     return () => {
       cleanup();
     };
-  }, [roomId, screenMode]);
+  }, [roomId, screenMode, hydrateQuestion]);
 
   // State updater that auto-broadcasts locally and to remote devices
   const updateState = useCallback(
     (updater: (prev: GameState) => GameState) => {
       setGameState((prev) => {
         const next = updater(prev);
-        const withMeta = { ...next, roomId, lastUpdated: Date.now() };
+        if (screenMode === 'host') {
+          historyRef.current = [...historyRef.current.slice(-29), prev];
+        }
+        const withMeta = { ...next, roomId, actionId: (prev.actionId ?? 0) + 1, lastUpdated: Date.now() };
         broadcastGameState(withMeta, roomId);
         return withMeta;
       });
     },
-    [roomId]
+    [roomId, screenMode]
   );
+
+  const undoLastAction = useCallback(() => {
+    const previous = historyRef.current.pop();
+    if (!previous) return;
+    const restored = { ...previous, roomId, actionId: (gameStateRef.current.actionId ?? 0) + 1, lastUpdated: Date.now() };
+    setGameState(restored);
+    broadcastGameState(restored, roomId);
+  }, [roomId]);
 
   // Sound trigger that plays locally and broadcasts to all devices
   const triggerSound = useCallback(
@@ -169,6 +198,7 @@ export default function App() {
   const resetGame = () => {
     const fresh = { ...createInitialGameState(), roomId, lastUpdated: Date.now() };
     setGameState(fresh);
+    historyRef.current = [];
     broadcastGameState(fresh, roomId);
   };
 
@@ -260,7 +290,7 @@ export default function App() {
         <nav className="sticky top-0 z-40 flex flex-wrap items-center justify-between border-b border-amber-500/20 bg-slate-950/95 px-3 md:px-5 py-2 backdrop-blur-md gap-2">
           <div className="flex items-center gap-2 sm:gap-3">
             <span className="font-display font-extrabold text-amber-400 text-sm hidden sm:inline">
-              FAMILY FEUD
+              تحدّي العائلة
             </span>
 
             {/* Mode Switcher Tabs */}
@@ -363,6 +393,8 @@ export default function App() {
           onSwitchToAudience={() => setScreenMode('audience')}
           p2pConnected={p2pConnected}
           roomId={roomId}
+          onUndo={undoLastAction}
+          canUndo={historyRef.current.length > 0}
         />
       )}
 

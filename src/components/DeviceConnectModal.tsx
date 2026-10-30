@@ -57,22 +57,12 @@ export function DeviceConnectModal({
 
   const getHostUrl = () => {
     const base = getBaseUrl();
-    const pathname = typeof window !== 'undefined' ? window.location.pathname : '/';
-    let cleanPath = pathname;
-    if (!cleanPath.endsWith('/') && !cleanPath.endsWith('.html')) {
-      cleanPath += '/';
-    }
-    return `${base}${cleanPath}?mode=remote&room=${encodeURIComponent(roomId)}#remote`;
+    return `${base}/host?room=${encodeURIComponent(roomId)}`;
   };
 
   const getAudienceUrl = () => {
     const base = getBaseUrl();
-    const pathname = typeof window !== 'undefined' ? window.location.pathname : '/';
-    let cleanPath = pathname;
-    if (!cleanPath.endsWith('/') && !cleanPath.endsWith('.html')) {
-      cleanPath += '/';
-    }
-    return `${base}${cleanPath}?mode=display&room=${encodeURIComponent(roomId)}#display`;
+    return `${base}/play?room=${encodeURIComponent(roomId)}`;
   };
 
   // Generate QR code whenever isOpen, roomId, or customDomain changes

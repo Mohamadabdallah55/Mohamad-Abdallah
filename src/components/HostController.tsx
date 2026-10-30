@@ -1,10 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { GameState, Question } from '../types/game';
 import { INITIAL_QUESTIONS } from '../data/questions';
 import { getMultiplierForRound, pickNewQuestion } from '../utils/gameDefaults';
-import { FeudLogo } from './FeudLogo';
-import { IbnTaymiyyahLogo } from './IbnTaymiyyahLogo';
 import { AnimatedCounter } from './AnimatedCounter';
+import { awardRound } from '../utils/gameEngine';
 
 interface HostControllerProps {
   state: GameState;
@@ -14,6 +13,8 @@ interface HostControllerProps {
   onSwitchToAudience?: () => void;
   p2pConnected?: boolean;
   roomId?: string;
+  onUndo?: () => void;
+  canUndo?: boolean;
 }
 
 export function HostController({
@@ -24,6 +25,8 @@ export function HostController({
   onSwitchToAudience,
   p2pConnected = false,
   roomId = 'FEUD',
+  onUndo,
+  canUndo = false,
 }: HostControllerProps) {
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -118,18 +121,7 @@ export function HostController({
   // Award round bank to team
   const handleAwardBank = (team: 'A' | 'B') => {
     triggerHaptic([80, 40, 80, 40, 160]);
-    updateState((prev) => {
-      const teamAAdd = team === 'A' ? prev.roundBank : 0;
-      const teamBAdd = team === 'B' ? prev.roundBank : 0;
-
-      return {
-        ...prev,
-        teamA: { ...prev.teamA, score: prev.teamA.score + teamAAdd },
-        teamB: { ...prev.teamB, score: prev.teamB.score + teamBAdd },
-        roundBank: 0,
-        phase: 'ROUND_OVER',
-      };
-    });
+    updateState((prev) => awardRound(prev, team));
   };
 
   // Resolve Steal
@@ -141,13 +133,7 @@ export function HostController({
         const teamAAdd = beneficiary === 'A' ? prev.roundBank : 0;
         const teamBAdd = beneficiary === 'B' ? prev.roundBank : 0;
 
-        return {
-          ...prev,
-          teamA: { ...prev.teamA, score: prev.teamA.score + teamAAdd },
-          teamB: { ...prev.teamB, score: prev.teamB.score + teamBAdd },
-          roundBank: 0,
-          phase: 'ROUND_OVER',
-        };
+        return awardRound(prev, beneficiary);
       });
     } else {
       triggerSound('strike');
@@ -156,13 +142,7 @@ export function HostController({
         const teamAAdd = beneficiary === 'A' ? prev.roundBank : 0;
         const teamBAdd = beneficiary === 'B' ? prev.roundBank : 0;
 
-        return {
-          ...prev,
-          teamA: { ...prev.teamA, score: prev.teamA.score + teamAAdd },
-          teamB: { ...prev.teamB, score: prev.teamB.score + teamBAdd },
-          roundBank: 0,
-          phase: 'ROUND_OVER',
-        };
+        return awardRound(prev, beneficiary);
       });
     }
   };
@@ -185,6 +165,10 @@ export function HostController({
         faceOffWinner: null,
         stealTeam: null,
         phase: 'FACE_OFF',
+        awardedRound: null,
+        timerSeconds: 30,
+        timerRunning: false,
+        timerEndsAt: null,
         currentQuestion: nextQ,
         revealedAnswers: new Array(nextQ.answers.length).fill(false),
         burntQuestionIds: [...prev.burntQuestionIds, nextQ.id],
@@ -212,6 +196,7 @@ export function HostController({
       faceOffWinner: null,
       stealTeam: null,
       phase: 'FACE_OFF',
+      awardedRound: null,
       burntQuestionIds: prev.burntQuestionIds.includes(q.id) ? prev.burntQuestionIds : [...prev.burntQuestionIds, q.id],
     }));
     setShowQuestionsDrawer(false);
@@ -223,17 +208,41 @@ export function HostController({
     return matchesCat && matchesQuery;
   });
 
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      const answerIndex = Number(event.key) - 1;
+      if (answerIndex >= 0 && answerIndex < (state.currentQuestion?.answers.length ?? 0)) handleRevealAnswer(answerIndex);
+      if (event.key.toLowerCase() === 'x') handleStrike();
+      if (event.key.toLowerCase() === 'z' && onUndo) onUndo();
+      if (event.code === 'Space') {
+        event.preventDefault();
+        updateState((prev) => ({ ...prev, timerRunning: !prev.timerRunning, timerEndsAt: !prev.timerRunning ? Date.now() + prev.timerSeconds * 1000 : null }));
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-3 md:p-6 pb-24">
       {/* Top Header: Logos & Primary Navigation */}
       <header className="mx-auto max-w-4xl flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4 mb-4">
         <div className="flex items-center gap-3">
-          <FeudLogo size="small" />
-          <IbnTaymiyyahLogo className="h-10 w-10 md:h-12 md:w-12 hidden sm:flex" />
+          <div className="rounded-2xl border-2 border-amber-400 bg-gradient-to-b from-blue-800 to-blue-950 px-4 py-2 font-display text-sm font-black text-amber-200 shadow-[0_0_20px_rgba(251,191,36,.25)]">
+            تحدّي العائلة
+          </div>
         </div>
 
         {/* Clear Action Buttons */}
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={onUndo}
+            disabled={!canUndo}
+            className="rounded-xl border border-slate-600 bg-slate-800 px-3 py-2 text-xs font-black text-white disabled:cursor-not-allowed disabled:opacity-35"
+          >
+            ↶ تراجع
+          </button>
           {/* Main button to switch/display Audience Screen */}
           {onSwitchToAudience && (
             <button
@@ -340,6 +349,26 @@ export function HostController({
             <div className="font-display font-black text-2xl md:text-4xl text-white tabular-nums mt-0.5">
               <AnimatedCounter value={state.teamB.score} />
             </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-[1fr_auto] gap-2 rounded-2xl border border-amber-500/30 bg-slate-900/80 p-3">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => updateState((prev) => ({ ...prev, timerRunning: !prev.timerRunning, timerEndsAt: !prev.timerRunning ? Date.now() + prev.timerSeconds * 1000 : null }))}
+              className="rounded-xl bg-amber-500 px-4 py-2 text-xs font-black text-slate-950"
+            >
+              {state.timerRunning ? 'إيقاف المؤقت' : 'تشغيل المؤقت'}
+            </button>
+            <button
+              onClick={() => updateState((prev) => ({ ...prev, timerSeconds: 30, timerRunning: false, timerEndsAt: null }))}
+              className="rounded-xl bg-slate-800 px-3 py-2 text-xs font-bold text-white"
+            >
+              إعادة 30ث
+            </button>
+          </div>
+          <div className="rounded-xl border border-amber-400/50 bg-black/50 px-4 py-1 font-display text-2xl font-black text-amber-300 tabular-nums">
+            {state.timerSeconds}ث
           </div>
         </div>
 
@@ -497,9 +526,10 @@ export function HostController({
           <div className="flex items-center gap-2 pt-1">
             <button
               onClick={handleNextRound}
+                disabled={state.currentRound >= 4}
               className="flex-1 rounded-2xl border-2 border-amber-400 bg-gradient-to-r from-amber-500 to-amber-600 py-3 font-display font-black text-sm md:text-base text-slate-950 shadow-md hover:brightness-110 active:scale-95 transition-all"
             >
-              {state.currentRound < 4 ? `الانتقال للجولة ${state.currentRound + 1} ⏭` : 'سؤال جديد ⏭'}
+              {state.currentRound < 4 ? `الانتقال للجولة ${state.currentRound + 1} ⏭` : 'انتهت الجولات الأربع'}
             </button>
             <button
               onClick={() => setShowTeamEditModal(true)}
