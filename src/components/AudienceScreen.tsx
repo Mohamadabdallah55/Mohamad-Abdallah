@@ -2,8 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { GameState } from '../types/game';
 import { AnimatedCounter } from './AnimatedCounter';
 import { GrandWinnerModal } from './GrandWinnerModal';
-import { getTimerRemaining } from '../utils/gameEngine';
-import { StrikeOverlay } from './StrikesIndicator';
+import { FlipCard } from './FlipCard';
+import { StrikesIndicator, StrikeOverlay } from './StrikesIndicator';
+import { MarqueeArch } from './MarqueeArch';
+import { FeudLogo } from './FeudLogo';
+import { IbnTaymiyyahLogo } from './IbnTaymiyyahLogo';
+import { Confetti } from './Confetti';
 
 interface AudienceScreenProps {
   state: GameState;
@@ -28,189 +32,315 @@ export function AudienceScreen({
   onToggleFullscreen,
   isFullscreen = false,
   p2pConnected = false,
-  serverConnected = false,
   roomId = 'FEUD',
 }: AudienceScreenProps) {
   const [dismissed, setDismissed] = useState(false);
-  const [now, setNow] = useState(Date.now());
-  const [strikeEvent, setStrikeEvent] = useState(0);
-  const [introVisible, setIntroVisible] = useState(false);
-  const introStarted = useRef(false);
+  const [strikeOverlayActive, setStrikeOverlayActive] = useState(false);
+  const [isCorrectFlash, setIsCorrectFlash] = useState(false);
+  const [isStrikeFlash, setIsStrikeFlash] = useState(false);
   const previousStrikes = useRef(state.strikes);
-  const [strikeTeam, setStrikeTeam] = useState<'A' | 'B' | null>(null);
-  const previousPhase = useRef(state.phase);
-  const [stealEvent, setStealEvent] = useState(false);
-  const previousScores = useRef({ A: state.teamA.score, B: state.teamB.score });
-  const [scorePulse, setScorePulse] = useState<'A' | 'B' | null>(null);
+  const previousRevealedCount = useRef(
+    state.revealedAnswers.filter(Boolean).length
+  );
 
-  useEffect(() => {
-    if (!state.timerRunning) return;
-    const id = window.setInterval(() => setNow(Date.now()), 250);
-    return () => window.clearInterval(id);
-  }, [state.timerRunning]);
-
+  // Trigger strike effects on strike increment
   useEffect(() => {
     if (state.strikes > previousStrikes.current) {
-      setStrikeTeam(state.activeTeam);
-      setStrikeEvent((value) => value + 1);
-      const id = window.setTimeout(() => setStrikeEvent(0), 1500);
+      setIsStrikeFlash(true);
+      setStrikeOverlayActive(true);
+      const timer = window.setTimeout(() => {
+        setIsStrikeFlash(false);
+        setStrikeOverlayActive(false);
+      }, 1200);
       previousStrikes.current = state.strikes;
-      return () => window.clearTimeout(id);
+      return () => window.clearTimeout(timer);
     }
     previousStrikes.current = state.strikes;
   }, [state.strikes]);
 
+  // Trigger correct answer flash sheen on arch
   useEffect(() => {
-    const freshOpening = state.currentRound === 1 && state.phase === 'FACE_OFF' && state.teamA.score === 0 && state.teamB.score === 0 && state.roundBank === 0 && state.strikes === 0 && !state.revealedAnswers.some(Boolean);
-    const key = `family_challenge_intro_${state.roomId || roomId}`;
-    if (!freshOpening || introStarted.current || sessionStorage.getItem(key)) return;
-    introStarted.current = true;
-    setIntroVisible(true);
-    const timer = window.setTimeout(() => { setIntroVisible(false); sessionStorage.setItem(key, 'seen'); }, 6400);
-    return () => window.clearTimeout(timer);
-  }, [state.actionId, state.currentRound, state.phase, state.roomId, state.teamA.score, state.teamB.score, roomId]);
+    const currentRevealed = state.revealedAnswers.filter(Boolean).length;
+    if (currentRevealed > previousRevealedCount.current) {
+      setIsCorrectFlash(true);
+      const timer = window.setTimeout(() => setIsCorrectFlash(false), 900);
+      previousRevealedCount.current = currentRevealed;
+      return () => window.clearTimeout(timer);
+    }
+    previousRevealedCount.current = currentRevealed;
+  }, [state.revealedAnswers]);
 
   useEffect(() => {
-    const awarded = previousPhase.current === 'STEAL' && state.phase === 'ROUND_OVER';
-    if (awarded) { setStealEvent(true); window.setTimeout(() => setStealEvent(false), 1500); }
-    previousPhase.current = state.phase;
-  }, [state.phase, state.awardedRound]);
+    if (state.phase !== 'GAME_OVER') setDismissed(false);
+  }, [state.phase]);
 
-  useEffect(() => {
-    const previous = previousScores.current;
-    const team = state.teamA.score > previous.A ? 'A' : state.teamB.score > previous.B ? 'B' : null;
-    if (team) { setScorePulse(team); window.setTimeout(() => setScorePulse(null), 900); }
-    previousScores.current = { A: state.teamA.score, B: state.teamB.score };
+  const winner = useMemo<'A' | 'B' | 'TIE'>(() => {
+    if (state.teamA.score > state.teamB.score) return 'A';
+    if (state.teamB.score > state.teamA.score) return 'B';
+    return 'TIE';
   }, [state.teamA.score, state.teamB.score]);
 
-  useEffect(() => { if (state.phase !== 'GAME_OVER') setDismissed(false); }, [state.phase]);
+  // Split answers into Column 1 (odd 1, 3, 5, 7 - indices 0, 2, 4, 6) and Column 2 (even 2, 4, 6, 8 - indices 1, 3, 5, 7)
+  const answers = state.currentQuestion?.answers ?? [];
+  const rightColumnAnswers: { answer: typeof answers[0]; originalIndex: number }[] = [];
+  const leftColumnAnswers: { answer: typeof answers[0]; originalIndex: number }[] = [];
 
-  const seconds = getTimerRemaining(state, now);
-  const winner = useMemo<'A' | 'B' | 'TIE'>(() => state.teamA.score > state.teamB.score ? 'A' : state.teamB.score > state.teamA.score ? 'B' : 'TIE', [state.teamA.score, state.teamB.score]);
-  const revealed = state.revealedAnswers.filter(Boolean).length;
+  answers.forEach((ans, idx) => {
+    if (idx % 2 === 0) {
+      rightColumnAnswers.push({ answer: ans, originalIndex: idx });
+    } else {
+      leftColumnAnswers.push({ answer: ans, originalIndex: idx });
+    }
+  });
 
   return (
-    <div className={`live-arena${state.phase === 'STEAL' ? ' is-steal' : ''}`} dir="rtl">
-      <div className="arena-atmosphere" aria-hidden="true">
-        <span className="atmosphere-orbit orbit-a" /><span className="atmosphere-orbit orbit-b" />
-        <span className="atmosphere-beam beam-a" /><span className="atmosphere-beam beam-b" />
-        <span className="arena-grain" />
-      </div>
+    <div
+      className="relative w-screen h-screen min-h-screen overflow-hidden feud-stage-bg flex flex-col justify-between select-none p-3 md:p-5 text-white"
+      dir="rtl"
+    >
+      {/* Studio Arch Bulbs & Spotlights */}
+      <MarqueeArch
+        isCorrectFlash={isCorrectFlash}
+        isStrikeFlash={isStrikeFlash}
+      />
 
-      <header className="arena-header">
-        <TeamPod team={state.teamA} active={state.activeTeam === 'A'} struck={strikeEvent > 0 && strikeTeam === 'A'} pulsing={scorePulse === 'A'} side="a" />
+      {/* Confetti when game ends */}
+      <Confetti active={state.phase === 'GAME_OVER'} />
 
-        <div className="arena-brand" aria-label="العلامة البصرية للمسابقة">
-          <img className="arena-logo" src={state.brandLogoDataUrl || '/family-challenge-logo-small.png'} srcSet={state.brandLogoDataUrl ? undefined : '/family-challenge-logo-v2.png 2x'} alt="FAMILY CHALLENGE" />
-          <span className="brand-copy"><small>FAMILY CHALLENGE</small><strong>تحدّي العائلة</strong></span>
+      {/* Top Studio Header Bar */}
+      <header className="relative z-20 flex items-center justify-between gap-3 w-full max-w-7xl mx-auto px-2">
+        {/* Right: Ibn Taymiyyah Mosque Emblem */}
+        <div className="flex items-center gap-2.5">
+          <IbnTaymiyyahLogo className="h-11 w-11 md:h-14 md:w-14" />
+          <div className="hidden sm:flex flex-col">
+            <span className="font-display font-black text-xs md:text-sm text-amber-300">
+              مسجد ابن تيمية
+            </span>
+            <span className="text-[10px] md:text-xs text-slate-300">
+              المنافسات الثقافية
+            </span>
+          </div>
         </div>
 
-        <div className="round-plaque" aria-label={`الجولة ${state.currentRound} من أربع، مضاعف النقاط ${state.roundMultiplier}`}>
-          <span className="round-plaque-label">الجولة</span>
-          <b>{String(state.currentRound).padStart(2, '0')}<small> / 04</small></b>
-          <span className="round-multiplier">×{state.roundMultiplier}</span>
+        {/* Center: FAMILY FEUD Logo */}
+        <div className="flex-1 flex justify-center">
+          <FeudLogo size="medium" />
         </div>
 
-        <TeamPod team={state.teamB} active={state.activeTeam === 'B'} struck={strikeEvent > 0 && strikeTeam === 'B'} pulsing={scorePulse === 'B'} side="b" />
+        {/* Left: Round Multiplier & Fullscreen toggle */}
+        <div className="flex items-center gap-2">
+          {/* Round multiplier badge */}
+          <div className="flex items-center gap-1.5 rounded-2xl border-2 border-amber-400/80 bg-gradient-to-r from-blue-950 to-slate-900 px-3 py-1.5 shadow-[0_0_15px_rgba(245,158,11,0.3)]">
+            <span className="text-xs md:text-sm font-black text-amber-300 font-display">
+              الجولة {state.currentRound}
+            </span>
+            {state.roundMultiplier > 1 && (
+              <span className="rounded-lg bg-amber-400 px-1.5 py-0.5 text-[10px] md:text-xs font-black text-slate-950">
+                ×{state.roundMultiplier}
+              </span>
+            )}
+          </div>
+
+          {/* Connection Chip */}
+          <div className="hidden md:flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-[11px] text-slate-300">
+            <span
+              className={`h-2 w-2 rounded-full ${
+                p2pConnected ? 'bg-emerald-400 shadow-[0_0_8px_#34d399]' : 'bg-amber-400'
+              }`}
+            />
+            <span className="font-mono">{roomId}</span>
+          </div>
+
+          {/* Fullscreen Toggle */}
+          {onToggleFullscreen && (
+            <button
+              onClick={onToggleFullscreen}
+              title={isFullscreen ? 'الخروج من ملء الشاشة' : 'ملء الشاشة'}
+              className="flex h-9 w-9 md:h-10 md:w-10 items-center justify-center rounded-xl border border-amber-400/50 bg-slate-900/90 text-amber-300 hover:text-white hover:bg-slate-800 transition-colors shadow"
+            >
+              ⛶
+            </button>
+          )}
+
+          {/* Return to Host Remote Tab (if opened from host tab) */}
+          {showReturnToHost && onOpenControllerTab && (
+            <button
+              onClick={onOpenControllerTab}
+              className="rounded-xl border border-blue-400/60 bg-blue-900/60 px-3 py-1.5 text-xs font-bold text-blue-200 hover:bg-blue-800 transition-colors"
+            >
+              ← التحكم
+            </button>
+          )}
+        </div>
       </header>
 
-      <main className="arena-main">
-        <section className="arena-question" aria-live="polite" aria-label="السؤال الحالي">
-          <div className="question-kicker"><span /> سؤال الجولة <span className="question-kicker-line" /></div>
-          <h1>{state.currentQuestion?.questionText || 'بانتظار اختيار السؤال'}</h1>
-          <div className="question-baseline" />
+      {/* Main Broadcast Stage (Full 16:9 Landscape Area) */}
+      <main className="relative z-10 flex-1 flex items-center justify-between gap-3 md:gap-6 w-full max-w-7xl mx-auto my-auto px-2">
+        {/* Team A Podium (Right Side) */}
+        <aside className="w-40 sm:w-52 md:w-60 lg:w-68 shrink-0 flex flex-col items-center">
+          <div
+            className={`w-full rounded-3xl border-3 md:border-4 transition-all duration-300 p-3 sm:p-4 text-center bg-gradient-to-b from-blue-900 via-blue-950 to-slate-950 ${
+              state.activeTeam === 'A'
+                ? 'border-amber-300 shadow-[0_0_35px_rgba(251,191,36,0.65),inset_0_2px_10px_rgba(255,255,255,0.3)] scale-[1.03]'
+                : 'border-blue-600/50 shadow-[0_0_20px_rgba(30,58,138,0.4)] opacity-90'
+            }`}
+          >
+            {/* Active turn badge */}
+            <div className="mb-1.5 flex justify-center">
+              <span
+                className={`rounded-full px-2.5 py-0.5 text-[10px] sm:text-xs font-black ${
+                  state.activeTeam === 'A'
+                    ? 'bg-amber-400 text-slate-950 shadow-[0_0_10px_rgba(251,191,36,0.8)]'
+                    : 'bg-slate-800/80 text-slate-400'
+                }`}
+              >
+                {state.activeTeam === 'A' ? 'الدور الآن ⚡' : 'الفريق الأول'}
+              </span>
+            </div>
+
+            {/* Team Name */}
+            <h2 className="font-display font-black text-base sm:text-xl md:text-2xl text-white truncate drop-shadow">
+              {state.teamA.name}
+            </h2>
+
+            {/* Giant Score Display */}
+            <div className="mt-2.5 rounded-2xl border-2 sm:border-3 border-blue-400/70 bg-gradient-to-b from-blue-800 via-blue-950 to-slate-950 py-2 sm:py-3 px-2 shadow-[inset_0_2px_8px_rgba(255,255,255,0.25)]">
+              <span className="font-display font-black text-4xl sm:text-6xl md:text-7xl text-amber-300 drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)]">
+                <AnimatedCounter value={state.teamA.score} duration={600} />
+              </span>
+              <span className="block text-[11px] font-bold text-blue-200 mt-0.5">
+                نقطة
+              </span>
+            </div>
+          </div>
+        </aside>
+
+        {/* Center Stage: Header Crown Bank + Question + Answers Board + Strikes */}
+        <section className="flex-1 min-w-0 flex flex-col items-center justify-center max-w-4xl mx-auto">
+          {/* Header Crown Scoreboard (Bank Points in Giant Numbers) */}
+          <div className="relative mb-2 sm:mb-3 flex flex-col items-center">
+            {/* The Royal Blue Score Box with Thick Gold Beveled Border (matching Family Feud TV Photo) */}
+            <div className="relative flex min-w-[170px] sm:min-w-[240px] md:min-w-[300px] items-center justify-center rounded-2xl md:rounded-3xl border-3 md:border-5 border-amber-300 bg-gradient-to-b from-[#124294] via-[#0b296b] to-[#05153b] px-6 sm:px-10 py-1 sm:py-2 shadow-[0_0_40px_rgba(251,191,36,0.55),inset_0_3px_12px_rgba(255,255,255,0.4)]">
+              <span className="font-display font-black text-5xl sm:text-7xl md:text-8xl text-white tracking-wider tabular-nums drop-shadow-[0_4px_10px_rgba(0,0,0,0.9)]">
+                <AnimatedCounter value={state.roundBank} duration={500} />
+              </span>
+            </div>
+
+            {/* Strikes Indicator below bank */}
+            <div className="mt-2 flex items-center justify-center">
+              <StrikesIndicator strikes={state.strikes} />
+            </div>
+
+            {/* Steal Banner Alert */}
+            {state.phase === 'STEAL' && (
+              <div className="mt-2 rounded-xl border-2 border-amber-300 bg-red-950/90 px-4 py-1 text-center shadow-[0_0_20px_rgba(239,68,68,0.7)] animate-pulse">
+                <span className="font-display font-black text-xs sm:text-sm md:text-base text-amber-200">
+                  ⚡ فرصة سرقة البنك لـ {state.stealTeam === 'A' ? state.teamA.name : state.teamB.name}!
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* Main Answer Board: 2 Balanced Columns with Metallic Gold Border Frame */}
+          <div className="w-full rounded-2xl sm:rounded-3xl border-3 sm:border-4 border-amber-400/90 bg-gradient-to-b from-slate-950 via-blue-950/70 to-slate-950 p-2 sm:p-3 shadow-[0_0_35px_rgba(245,158,11,0.35),inset_0_2px_10px_rgba(0,0,0,0.8)]">
+            <div className="grid grid-cols-2 gap-2 sm:gap-3 w-full">
+              {/* Column 1 (Right in RTL - Odd Answers: 1, 3, 5, 7) */}
+              <div className="flex flex-col gap-2 sm:gap-3">
+                {rightColumnAnswers.map(({ answer, originalIndex }) => (
+                  <FlipCard
+                    key={`${state.currentQuestion?.id ?? 'q'}-${originalIndex}`}
+                    index={originalIndex}
+                    answerText={answer.text}
+                    points={answer.points}
+                    isRevealed={Boolean(state.revealedAnswers[originalIndex])}
+                  />
+                ))}
+              </div>
+
+              {/* Column 2 (Left in RTL - Even Answers: 2, 4, 6, 8) */}
+              <div className="flex flex-col gap-2 sm:gap-3">
+                {leftColumnAnswers.map(({ answer, originalIndex }) => (
+                  <FlipCard
+                    key={`${state.currentQuestion?.id ?? 'q'}-${originalIndex}`}
+                    index={originalIndex}
+                    answerText={answer.text}
+                    points={answer.points}
+                    isRevealed={Boolean(state.revealedAnswers[originalIndex])}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
         </section>
 
-        <section className="arena-scoreline" aria-label="حالة الجولة">
-          <div className="scoreline-bank">
-            <span>بنك الجولة</span>
-            <strong><AnimatedCounter value={state.roundBank} duration={700} /></strong>
-            <small>نقطة أساسية</small>
-          </div>
+        {/* Team B Podium (Left Side) */}
+        <aside className="w-40 sm:w-52 md:w-60 lg:w-68 shrink-0 flex flex-col items-center">
+          <div
+            className={`w-full rounded-3xl border-3 md:border-4 transition-all duration-300 p-3 sm:p-4 text-center bg-gradient-to-b from-blue-900 via-blue-950 to-slate-950 ${
+              state.activeTeam === 'B'
+                ? 'border-amber-300 shadow-[0_0_35px_rgba(251,191,36,0.65),inset_0_2px_10px_rgba(255,255,255,0.3)] scale-[1.03]'
+                : 'border-blue-600/50 shadow-[0_0_20px_rgba(30,58,138,0.4)] opacity-90'
+            }`}
+          >
+            {/* Active turn badge */}
+            <div className="mb-1.5 flex justify-center">
+              <span
+                className={`rounded-full px-2.5 py-0.5 text-[10px] sm:text-xs font-black ${
+                  state.activeTeam === 'B'
+                    ? 'bg-amber-400 text-slate-950 shadow-[0_0_10px_rgba(251,191,36,0.8)]'
+                    : 'bg-slate-800/80 text-slate-400'
+                }`}
+              >
+                {state.activeTeam === 'B' ? 'الدور الآن ⚡' : 'الفريق الثاني'}
+              </span>
+            </div>
 
-          <div className="scoreline-progress" aria-label={`${revealed} إجابات مكشوفة من ${state.currentQuestion?.answers.length ?? 0}`}>
-            <div className="progress-copy"><span>لوحة الإجابات</span><b>{revealed}<small> / {state.currentQuestion?.answers.length ?? 0}</small></b></div>
-            <div className="progress-rail"><i style={{ width: `${state.currentQuestion?.answers.length ? (revealed / state.currentQuestion.answers.length) * 100 : 0}%` }} /></div>
-          </div>
+            {/* Team Name */}
+            <h2 className="font-display font-black text-base sm:text-xl md:text-2xl text-white truncate drop-shadow">
+              {state.teamB.name}
+            </h2>
 
-          <div className="scoreline-strikes" aria-label={`${state.strikes} أخطاء من ثلاثة`}>
-            <span>الأخطاء</span>
-            <div>{[0, 1, 2].map((index) => <b key={index} className={index < state.strikes ? 'strike-lit' : ''} aria-label={index < state.strikes ? 'خطأ مسجل' : 'خطأ متاح'}><i /></b>)}</div>
-            {state.phase === 'STEAL' && <strong className="steal-cue">فرصة سرقة</strong>}
+            {/* Giant Score Display */}
+            <div className="mt-2.5 rounded-2xl border-2 sm:border-3 border-blue-400/70 bg-gradient-to-b from-blue-800 via-blue-950 to-slate-950 py-2 sm:py-3 px-2 shadow-[inset_0_2px_8px_rgba(255,255,255,0.25)]">
+              <span className="font-display font-black text-4xl sm:text-6xl md:text-7xl text-amber-300 drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)]">
+                <AnimatedCounter value={state.teamB.score} duration={600} />
+              </span>
+              <span className="block text-[11px] font-bold text-blue-200 mt-0.5">
+                نقطة
+              </span>
+            </div>
           </div>
-
-          <div className={`scoreline-timer${seconds <= 5 ? ' timer-urgent' : ''}`} aria-label={`المؤقت ${seconds} ثانية`}>
-            <svg viewBox="0 0 64 64" aria-hidden="true"><circle className="timer-track" cx="32" cy="32" r="27" /><circle className="timer-progress" cx="32" cy="32" r="27" style={{ strokeDashoffset: 170 - Math.min(seconds, 30) / 30 * 170 }} /></svg>
-            <b>{seconds}</b><small>ث</small>
-          </div>
-
-          <div className="connection-status" title={`رمز الغرفة ${roomId}`}>
-            <i className={p2pConnected || serverConnected ? 'connection-live' : ''} />
-            <span>{p2pConnected ? 'مباشر · P2P' : serverConnected ? 'مباشر · الخادم' : 'بانتظار الربط'}</span>
-          </div>
-
-          <button className="arena-fullscreen" type="button" onClick={onToggleFullscreen} aria-label={isFullscreen ? 'الخروج من ملء الشاشة' : 'ملء الشاشة'} title="ملء الشاشة">
-            {isFullscreen ? '⛶' : '⛶'}
-          </button>
-          {showReturnToHost && <button className="arena-return-host" type="button" onClick={onOpenControllerTab}>← الرجوع للتحكم</button>}
-        </section>
-
-        <section className="answer-wall" aria-label="الإجابات">
-          <div className={`wall-topline${state.phase === 'STEAL' ? ' wall-topline-steal' : state.phase === 'ROUND_OVER' ? ' wall-topline-complete' : ''}`} role="status">
-            <span>{state.phase === 'STEAL' ? 'فرصة أخيرة لسرقة البنك' : state.phase === 'ROUND_OVER' ? `قيمة الجولة ${state.roundBank} × ${state.roundMultiplier} = ${state.roundBank * state.roundMultiplier} نقطة` : 'اكتشفوا إجابات الجمهور'}</span>
-            <span className="wall-room">{state.phase === 'STEAL' ? 'البنك لفريق واحد فقط' : roomId}</span>
-          </div>
-          <div className="answer-grid">
-            {state.currentQuestion?.answers.map((answer, index) => (
-              <StageAnswer key={`${state.currentQuestion?.id}-${index}`} index={index} answerText={answer.text} points={answer.points} isRevealed={Boolean(state.revealedAnswers[index])} />
-            ))}
-          </div>
-          <span className="wall-light wall-light-a" aria-hidden="true" /><span className="wall-light wall-light-b" aria-hidden="true" />
-        </section>
+        </aside>
       </main>
 
-      <footer className="arena-footer">
-        <div className="footer-teams"><i className="team-color-a" /><span>{state.teamA.name}</span><b>{state.teamA.score}</b><em>—</em><b>{state.teamB.score}</b><span>{state.teamB.name}</span><i className="team-color-b" /></div>
-        <div className="footer-data"><span className={`data-badge${state.currentQuestion?.pointsSource === 'survey' ? ' is-survey' : ''}`} />{state.currentQuestion?.pointsSource === 'survey' ? 'نتائج استطلاع فعلي' : 'نقاط تقديرية للّعب'}</div>
+      {/* Subtle Broadcast Stage Footer */}
+      <footer className="relative z-20 flex items-center justify-between text-[11px] md:text-xs text-slate-400 border-t border-amber-500/20 pt-2 px-4 max-w-7xl mx-auto w-full">
+        <span>مسجد ابن تيمية · فاميلي فيود</span>
+        <span className="text-amber-300 font-bold">
+          {state.phase === 'ROUND_OVER'
+            ? 'اكتملت الجولة'
+            : state.phase === 'STEAL'
+            ? 'مرحلة سرقة النقاط'
+            : 'مباشر من استوديو المسجد'}
+        </span>
       </footer>
 
-      {state.phase === 'GAME_OVER' && !dismissed && <GrandWinnerModal winner={winner} teamA={state.teamA} teamB={state.teamB} onRestart={() => onRestartGame?.()} onClose={() => { setDismissed(true); onDismissGameOver?.(); }} />}
-      <StrikeOverlay key={strikeEvent} count={state.strikes} active={strikeEvent > 0} />
-      {stealEvent && <div className="steal-energy" aria-hidden="true"><i /></div>}
-      {introVisible && <ShowIntro teamA={state.teamA.name} teamB={state.teamB.name} onSkip={() => { setIntroVisible(false); sessionStorage.setItem(`family_challenge_intro_${state.roomId || roomId}`, 'seen'); }} />}
+      {/* Fullscreen Strike Buzzer Overlay */}
+      <StrikeOverlay count={state.strikes} active={strikeOverlayActive} />
+
+      {/* Grand Winner Modal when 4 Rounds complete */}
+      {state.phase === 'GAME_OVER' && !dismissed && (
+        <GrandWinnerModal
+          winner={winner}
+          teamA={state.teamA}
+          teamB={state.teamB}
+          onRestart={() => onRestartGame?.()}
+          onClose={() => {
+            setDismissed(true);
+            onDismissGameOver?.();
+          }}
+        />
+      )}
     </div>
-  );
-}
-
-function TeamPod({ team, active, struck, pulsing, side }: { team: GameState['teamA']; active: boolean; struck: boolean; pulsing: boolean; side: 'a' | 'b' }) {
-  return (
-    <section className={`arena-team team-${side}${active ? ' team-active' : ''}${struck ? ' team-struck' : ''}${pulsing ? ' team-score-pulse' : ''}`} aria-label={`الفريق ${team.name}: ${team.score} نقطة`}>
-      <img className="team-shield" src={side === 'a' ? '/assets/shields/team-cyan.png' : '/assets/shields/team-violet.png'} srcSet={side === 'a' ? '/assets/shields/team-cyan-hires.png 2x' : '/assets/shields/team-violet-hires.png 2x'} alt="" aria-hidden="true" />
-      <div className="team-identity"><small>{active ? 'الدور الآن' : 'الفريق'}</small><strong>{team.name}</strong></div>
-      <div className="team-total"><AnimatedCounter value={team.score} duration={850} /><small>نقطة</small></div>
-    </section>
-  );
-}
-
-function ShowIntro({ teamA, teamB, onSkip }: { teamA: string; teamB: string; onSkip: () => void }) {
-  return <div className="show-intro" role="dialog" aria-label="مقدمة FAMILY CHALLENGE">
-    <div className="intro-light intro-light-a" /><div className="intro-light intro-light-b" />
-    <img src="/family-challenge-logo-v2.png" alt="FAMILY CHALLENGE" className="intro-logo" />
-    <div className="intro-teams" dir="rtl">
-      <div><img src="/assets/shields/team-cyan.png" srcSet="/assets/shields/team-cyan-hires.png 2x" alt="" /><b>{teamA}</b></div>
-      <span>ضد</span>
-      <div><img src="/assets/shields/team-violet.png" srcSet="/assets/shields/team-violet-hires.png 2x" alt="" /><b>{teamB}</b></div>
-    </div>
-    <p>استعدّوا للمواجهة</p><div className="intro-progress"><i /></div>
-    <button type="button" onClick={onSkip}>تخطي المقدمة</button>
-  </div>;
-}
-
-function StageAnswer({ index, answerText, points, isRevealed }: { index: number; answerText: string; points: number; isRevealed: boolean }) {
-  return (
-    <article className={`answer-tile${isRevealed ? ' answer-open' : ''}`} aria-label={isRevealed ? `الإجابة ${index + 1}: ${answerText}، ${points} نقطة` : `الإجابة ${index + 1} مخفية`}>
-      <div className="tile-face"><b>{String(index + 1).padStart(2, '0')}</b><span>الإجابة مخفية</span><i /></div>
-      <div className="tile-answer"><span className="tile-index">{String(index + 1).padStart(2, '0')}</span><strong>{answerText}</strong><b className="tile-points">{points}<small>نقطة</small></b><i className="tile-glint" /></div>
-    </article>
   );
 }
