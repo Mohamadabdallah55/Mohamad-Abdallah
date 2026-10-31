@@ -11,6 +11,7 @@ import { Confetti } from './Confetti';
 
 interface AudienceScreenProps {
   state: GameState;
+  strikeSignal?: number;
   onOpenControllerTab?: () => void;
   showReturnToHost?: boolean;
   onRestartGame?: () => void;
@@ -25,6 +26,7 @@ interface AudienceScreenProps {
 
 export function AudienceScreen({
   state,
+  strikeSignal = 0,
   onOpenControllerTab,
   showReturnToHost = false,
   onRestartGame,
@@ -39,24 +41,44 @@ export function AudienceScreen({
   const [isCorrectFlash, setIsCorrectFlash] = useState(false);
   const [isStrikeFlash, setIsStrikeFlash] = useState(false);
   const previousStrikes = useRef(state.strikes);
+  const previousOverlayCount = useRef(state.strikeOverlayCount ?? 0);
+  const previousStrikeSignal = useRef(strikeSignal);
+  const strikeTimerRef = useRef<number | null>(null);
   const previousRevealedCount = useRef(
     state.revealedAnswers.filter(Boolean).length
   );
 
-  // Trigger strike effects on strike increment
+  // Trigger strike effects on strike increment, overlay counter increment, or direct strike signal
   useEffect(() => {
-    if (state.strikes > previousStrikes.current) {
+    const strikesIncreased = state.strikes > previousStrikes.current;
+    const overlayCountIncreased = (state.strikeOverlayCount ?? 0) > previousOverlayCount.current;
+    const signalIncreased = strikeSignal > previousStrikeSignal.current;
+
+    previousStrikes.current = state.strikes;
+    previousOverlayCount.current = state.strikeOverlayCount ?? 0;
+    previousStrikeSignal.current = strikeSignal;
+
+    if (strikesIncreased || overlayCountIncreased || signalIncreased) {
       setIsStrikeFlash(true);
       setStrikeOverlayActive(true);
-      const timer = window.setTimeout(() => {
+      if (strikeTimerRef.current) {
+        window.clearTimeout(strikeTimerRef.current);
+      }
+      strikeTimerRef.current = window.setTimeout(() => {
         setIsStrikeFlash(false);
         setStrikeOverlayActive(false);
-      }, 1200);
-      previousStrikes.current = state.strikes;
-      return () => window.clearTimeout(timer);
+        strikeTimerRef.current = null;
+      }, 1500);
     }
-    previousStrikes.current = state.strikes;
-  }, [state.strikes]);
+  }, [state.strikes, state.strikeOverlayCount, strikeSignal]);
+
+  useEffect(() => {
+    return () => {
+      if (strikeTimerRef.current) {
+        window.clearTimeout(strikeTimerRef.current);
+      }
+    };
+  }, []);
 
   // Trigger correct answer flash sheen on arch
   useEffect(() => {

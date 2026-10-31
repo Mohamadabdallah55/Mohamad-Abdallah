@@ -59,6 +59,7 @@ export default function App() {
     return 'audience';
   });
   const [returnToHostAvailable, setReturnToHostAvailable] = useState(false);
+  const [strikeSignal, setStrikeSignal] = useState(0);
 
   // Listen to hash changes (e.g. user toggles #remote in URL)
   useEffect(() => {
@@ -154,6 +155,9 @@ export default function App() {
         setGameState(hydrateQuestion(msg.state));
       } else if (msg.type === 'TRIGGER_SOUND') {
         playSound(msg.sound);
+        if (msg.sound === 'strike') {
+          setStrikeSignal((s) => s + 1);
+        }
       }
     }, roomId, 'audience', setServerConnected);
 
@@ -206,6 +210,9 @@ export default function App() {
       },
       onSoundTrigger: (sound) => {
         playSound(sound);
+        if (sound === 'strike') {
+          setStrikeSignal((s) => s + 1);
+        }
       },
     });
 
@@ -246,6 +253,9 @@ export default function App() {
   const triggerSound = useCallback(
     (sound: 'chime' | 'strike' | 'bell' | 'tick' | 'duplicate' | 'applause' | 'fanfare' | 'steal') => {
       playSound(sound);
+      if (sound === 'strike') {
+        setStrikeSignal((s) => s + 1);
+      }
       broadcastSound(sound, roomId);
     },
     [roomId]
@@ -451,6 +461,7 @@ export default function App() {
       {screenMode === 'audience' ? (
         <AudienceScreen
           state={toAudienceState(gameState)}
+          strikeSignal={strikeSignal}
           onOpenControllerTab={returnToHost}
           showReturnToHost={returnToHostAvailable}
           onRestartGame={resetGame}

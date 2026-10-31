@@ -122,7 +122,7 @@ export function HostController({
 
   // Trigger strike - Instant state update with zero timeout lag
   const handleStrike = () => {
-    if (state.phase === 'ROUND_OVER' || state.phase === 'GAME_OVER' || state.phase === 'STEAL') return;
+    if (state.phase === 'ROUND_OVER' || state.phase === 'GAME_OVER') return;
     triggerHaptic([100, 50, 100]);
 
     updateState((prev) => {
@@ -132,11 +132,24 @@ export function HostController({
       return {
         ...prev,
         strikes: nextStrikes,
+        strikeOverlayActive: true,
+        strikeOverlayCount: (prev.strikeOverlayCount || 0) + 1,
         phase: enterSteal ? 'STEAL' : prev.phase,
         stealTeam: enterSteal ? (prev.activeTeam === 'A' ? 'B' : 'A') : prev.stealTeam,
       };
     });
 
+    triggerSound('strike');
+  };
+
+  // Trigger quick visual + audio strike (e.g. during Face-Off without adding to team's 3-strike limit)
+  const handleQuickStrikeFlash = () => {
+    triggerHaptic([100, 50, 100]);
+    updateState((prev) => ({
+      ...prev,
+      strikeOverlayActive: true,
+      strikeOverlayCount: (prev.strikeOverlayCount || 0) + 1,
+    }));
     triggerSound('strike');
   };
 
@@ -189,7 +202,17 @@ export function HostController({
     if (state.phase !== 'STEAL') return;
     triggerHaptic(success ? [70, 40, 120] : [120, 60, 120]);
     triggerSound(success ? 'steal' : 'strike');
-    updateState((prev) => resolveSteal(prev, success));
+    updateState((prev) => {
+      const resolved = resolveSteal(prev, success);
+      if (!success) {
+        return {
+          ...resolved,
+          strikeOverlayActive: true,
+          strikeOverlayCount: (prev.strikeOverlayCount || 0) + 1,
+        };
+      }
+      return resolved;
+    });
   };
 
   // Next Round / Next Question
@@ -522,6 +545,36 @@ export function HostController({
             "{state.currentQuestion?.questionText}"
           </h2>
 
+          {/* Instant Top Strike Bar for Quick Thumb Reach on Phones */}
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleStrike}
+              disabled={state.phase === 'ROUND_OVER' || state.phase === 'GAME_OVER'}
+              className="flex-1 flex items-center justify-center gap-2 rounded-2xl border-2 border-red-500 bg-gradient-to-b from-red-600 to-red-800 py-2.5 px-4 font-display font-black text-base sm:text-lg text-white active:scale-95 transition-all disabled:opacity-40"
+            >
+              <span className="text-xl leading-none">❌</span>
+              <span>تسجيل سترايك ({state.strikes} من 3)</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleQuickStrikeFlash}
+              className="shrink-0 rounded-2xl border-2 border-red-400/70 bg-red-950/80 py-2.5 px-3.5 font-display font-black text-xs sm:text-sm text-red-200 active:scale-95 transition-all"
+              title="إظهار إشارة X وصوت الخطأ على الشاشة دون زيادة عداد الأخطاء الثلاثة"
+            >
+              ✕ خطأ سريع
+            </button>
+            {state.strikes > 0 && (
+              <button
+                type="button"
+                onClick={handleResetStrikes}
+                className="shrink-0 rounded-2xl border border-slate-700 bg-slate-800 py-2.5 px-3 text-xs font-bold text-slate-300 active:scale-95 transition-all"
+              >
+                تصفير 0
+              </button>
+            )}
+          </div>
+
           {/* 3. Answers Cards - Ergonomic Touch-Friendly for Phone Thumb */}
           <div className="host-answer-list mt-4 space-y-3">
             {state.currentQuestion?.answers.map((answer, index) => {
@@ -593,15 +646,24 @@ export function HostController({
           {/* Big Red Strike Button */}
           <div className="host-strike-row flex items-center gap-2">
             <button
+              type="button"
               onClick={handleStrike}
-              disabled={state.strikes >= 3 || state.phase === 'ROUND_OVER' || state.phase === 'GAME_OVER'}
-              className="host-strike-button flex-1 flex items-center justify-center gap-3 rounded-2xl border-3 border-red-500 bg-gradient-to-b from-red-600 to-red-800 min-h-[64px] py-3.5 px-6 font-display font-black text-xl text-white shadow-[0_0_35px_rgba(239,68,68,0.55)] active:scale-95 hover:brightness-110 transition-all"
+              disabled={state.phase === 'ROUND_OVER' || state.phase === 'GAME_OVER'}
+              className="host-strike-button flex-1 flex items-center justify-center gap-3 rounded-2xl border-3 border-red-500 bg-gradient-to-b from-red-600 to-red-800 min-h-[64px] py-3.5 px-6 font-display font-black text-xl text-white shadow-[0_0_35px_rgba(239,68,68,0.55)] active:scale-95 hover:brightness-110 transition-all disabled:opacity-40"
             >
               <span className="text-3xl leading-none">❌</span>
               <span>تسجيل خطأ ({state.strikes} من 3)</span>
             </button>
+            <button
+              type="button"
+              onClick={handleQuickStrikeFlash}
+              className="shrink-0 min-h-[64px] rounded-2xl border-2 border-red-400/70 bg-red-950/80 px-4 font-display font-black text-sm text-red-200 hover:bg-red-900/70 active:scale-95 transition-all"
+            >
+              ✕ إظهار X
+            </button>
             {state.strikes > 0 && (
               <button
+                type="button"
                 onClick={handleResetStrikes}
                 className="shrink-0 min-h-[64px] rounded-2xl border border-slate-700 bg-slate-800 px-5 text-xs font-bold text-slate-300 hover:bg-slate-700 active:scale-95 transition-all"
               >
@@ -686,10 +748,10 @@ export function HostController({
               🔔 رنة كشف
             </button>
             <button
-              onClick={() => triggerSound('strike')}
+              onClick={handleQuickStrikeFlash}
               className="rounded-lg bg-slate-800 px-2.5 py-1 text-xs font-bold text-red-400 hover:bg-slate-700"
             >
-              ❌ طنين خطأ
+              ❌ طنين خطأ (X)
             </button>
             <button
               onClick={() => triggerSound('bell')}

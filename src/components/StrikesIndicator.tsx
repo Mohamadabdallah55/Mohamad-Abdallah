@@ -38,13 +38,13 @@ export function StrikeOverlay({
   count: number;
   active: boolean;
 }) {
-  if (!active || count === 0) return null;
+  if (!active) return null;
 
-  const strikeCount = Math.min(3, Math.max(1, count));
+  const strikeCount = Math.min(3, Math.max(1, count || 1));
 
   return (
     <div
-      className="fixed inset-0 z-50 flex flex-col items-center justify-center pointer-events-none select-none bg-red-950/40 backdrop-blur-[2px]"
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center pointer-events-none select-none bg-red-950/60"
       role="alert"
       aria-label={`خطأ رقم ${strikeCount}`}
     >
