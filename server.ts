@@ -88,7 +88,11 @@ app.get('/api/sync/state', (req: Request, res: Response) => {
   const roomId = roomFromRequest(req);
   if (!roomId) return res.status(400).json({ error: 'Invalid room code' });
   const room = getOrCreateRoom(roomId);
-  res.json({ state: room.state, lastUpdated: room.lastUpdated });
+  res.json({
+    state: room.state,
+    lastUpdated: room.lastUpdated,
+    peerCount: room.clients.size,
+  });
 });
 
 // 2. Post room state update and broadcast to all connected devices in this room
@@ -96,15 +100,21 @@ app.post('/api/sync/state', (req: Request, res: Response) => {
   const roomId = roomFromRequest(req);
   if (!roomId) return res.status(400).json({ error: 'Invalid room code' });
   const { state } = req.body;
-  if (!validPublicState(state) || state.roomId !== roomId) {
-    return res.status(400).json({ error: 'Expected audience-safe game state for this room' });
+  if (!state || typeof state !== 'object' || !Array.isArray(state.revealedAnswers) || !Array.isArray(state.currentQuestion?.answers)) {
+    return res.status(400).json({ error: 'Invalid game state payload' });
   }
 
   const room = getOrCreateRoom(roomId);
-  if (room.state && !isNewerState(state, room.state)) {
-    return res.json({ success: true, duplicate: true, lastUpdated: room.lastUpdated });
-  }
-  const publicState = toAudienceState(state);
+  const nextActionId = Math.max(Number(state.actionId) || 0, (room.state?.actionId ?? 0) + 1);
+  const nextUpdated = Math.max(Date.now(), Number(state.lastUpdated) || 0, (room.state?.lastUpdated ?? 0) + 1);
+
+  const publicState = toAudienceState({
+    ...state,
+    roomId,
+    actionId: nextActionId,
+    lastUpdated: nextUpdated,
+  });
+
   try {
     fs.mkdirSync(roomDataDir, { recursive: true });
     const target = path.join(roomDataDir, `${roomId}.json`);
@@ -112,7 +122,7 @@ app.post('/api/sync/state', (req: Request, res: Response) => {
     fs.writeFileSync(temporary, JSON.stringify(publicState), { mode: 0o600 });
     fs.renameSync(temporary, target);
   } catch {
-    return res.status(503).json({ error: 'Could not persist room state' });
+    // Non-fatal on read-only serverless filesystems
   }
   room.state = publicState;
   room.lastUpdated = publicState.lastUpdated;
@@ -126,7 +136,12 @@ app.post('/api/sync/state', (req: Request, res: Response) => {
     }
   });
 
-  res.json({ success: true, lastUpdated: room.lastUpdated });
+  res.json({
+    success: true,
+    lastUpdated: room.lastUpdated,
+    actionId: publicState.actionId,
+    peerCount: room.clients.size,
+  });
 });
 
 // 3. Post sound event trigger and broadcast to audience screen devices
@@ -162,14 +177,14 @@ app.get('/api/sync/events', (req: Request, res: Response) => {
     'Access-Control-Allow-Origin': '*',
   });
 
-  res.write(`data: ${JSON.stringify({ type: 'CONNECTED', roomId })}\n\n`);
+  room.clients.add(res);
+
+  res.write(`data: ${JSON.stringify({ type: 'CONNECTED', roomId, peerCount: room.clients.size })}\n\n`);
 
   // Send current state immediately on connect
   if (room.state) {
     res.write(`data: ${JSON.stringify({ type: 'STATE_UPDATE', state: room.state, roomId })}\n\n`);
   }
-
-  room.clients.add(res);
 
   // Keep-alive heartbeat every 20s
   const heartbeat = setInterval(() => {

@@ -45,7 +45,9 @@ export async function checkSyncServerConnection(roomId: string): Promise<boolean
   if (!serverBase) return false;
   try {
     const response = await fetch(`${serverBase}/api/sync/state?room=${encodeURIComponent(roomId)}`, { signal: AbortSignal.timeout(2500) });
-    return response.ok;
+    if (!response.ok) return false;
+    const contentType = response.headers.get('content-type') || '';
+    return contentType.includes('application/json');
   } catch {
     return false;
   }

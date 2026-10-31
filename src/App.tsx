@@ -15,7 +15,7 @@ import {
 } from './utils/sync';
 import { playSound, setAudioControls } from './utils/audio';
 import { initP2PSync } from './utils/p2pSync';
-import { isNewerState, nextStateVersion } from './utils/stateVersion';
+import { nextStateVersion } from './utils/stateVersion';
 import { AudienceScreen } from './components/AudienceScreen';
 import { HostController } from './components/HostController';
 import { DeviceConnectModal } from './components/DeviceConnectModal';
@@ -129,32 +129,50 @@ export default function App() {
     gameStateRef.current = gameState;
   }, [gameState]);
 
-  // Fetch initial remote state from server
+  // Sync initial remote state from server (for Audience and newly connected Host)
   useEffect(() => {
-    if (screenMode !== 'audience') return;
     fetchRemoteState(roomId).then((remote) => {
-      if (remote && (!remote.roomId || remote.roomId === roomId)) {
-        setGameState((current) => isNewerState(remote, current) ? hydrateQuestion(remote) : current);
+      if (!remote || (remote.roomId && remote.roomId !== roomId)) return;
+      if (screenMode === 'audience') {
+        setGameState(hydrateQuestion(remote));
+      } else {
+        // Ensure Host phone's actionId is always ahead of any existing room state
+        setGameState((current) => ({
+          ...current,
+          actionId: Math.max(current.actionId ?? 0, (remote.actionId ?? 0) + 1),
+          lastUpdated: Math.max(current.lastUpdated ?? 0, Date.now()),
+        }));
       }
     });
   }, [roomId, hydrateQuestion, screenMode]);
 
-  // Subscribe to BroadcastChannel & Server-Sent Events (SSE)
+  // Subscribe to BroadcastChannel & Server-Sent Events (SSE) + HTTP polling fallback
   useEffect(() => {
     if (screenMode !== 'audience') return;
     const unsubscribe = subscribeToSync((msg: GameSyncMessage) => {
       if (msg.type === 'STATE_UPDATE' && msg.state) {
-        setGameState((prev) => {
-          // Avoid echoing / re-rendering if update is older than or equal to current state
-          return isNewerState(msg.state, prev) ? hydrateQuestion(msg.state) : prev;
-        });
+        setGameState(hydrateQuestion(msg.state));
       } else if (msg.type === 'TRIGGER_SOUND') {
         playSound(msg.sound);
       }
     }, roomId, 'audience', setServerConnected);
 
+    // HTTP polling fallback every 2s when P2P is not active (handles proxy-buffered SSE)
+    const pollInterval = window.setInterval(() => {
+      fetchRemoteState(roomId).then((remote) => {
+        if (remote && (!remote.roomId || remote.roomId === roomId)) {
+          setGameState((prev) =>
+            (remote.actionId ?? 0) !== (prev.actionId ?? 0) || (remote.lastUpdated ?? 0) > (prev.lastUpdated ?? 0)
+              ? hydrateQuestion(remote)
+              : prev
+          );
+        }
+      });
+    }, 2000);
+
     return () => {
       unsubscribe();
+      window.clearInterval(pollInterval);
     };
   }, [roomId, hydrateQuestion, screenMode]);
 
@@ -166,10 +184,12 @@ export default function App() {
     return () => { alive = false; window.clearInterval(interval); };
   }, [roomId]);
 
-  // WebRTC P2P Serverless Direct Sync (Zero-server sync for GitHub Pages and Phone ➔ TV)
+  // WebRTC P2P Serverless Direct Sync (Zero-server sync for GitHub Pages, Vercel, and Phone ➔ TV)
+  // If the QR Connect modal is open on this device, act as 'display' so scanning the QR from a phone connects immediately
+  const p2pRole: 'display' | 'remote' = showConnectModal || screenMode === 'audience' ? 'display' : 'remote';
+
   useEffect(() => {
-    const role = screenMode === 'host' ? 'remote' : 'display';
-    const cleanup = initP2PSync(roomId, role, {
+    const cleanup = initP2PSync(roomId, p2pRole, {
       getCurrentState: () => gameStateRef.current,
       onConnectionStatusChange: (connected, count) => {
         setP2pConnected(connected);
@@ -177,9 +197,12 @@ export default function App() {
       },
       onStateUpdate: (remoteState) => {
         if (remoteState.roomId && remoteState.roomId !== roomId) return;
-        setGameState((prev) => {
-          return isNewerState(remoteState, prev) ? hydrateQuestion(remoteState) : prev;
-        });
+        if (p2pRole === 'display') {
+          setGameState(hydrateQuestion(remoteState));
+          if (showConnectModal) {
+            setScreenMode('audience');
+          }
+        }
       },
       onSoundTrigger: (sound) => {
         playSound(sound);
@@ -189,7 +212,7 @@ export default function App() {
     return () => {
       cleanup();
     };
-  }, [roomId, screenMode, hydrateQuestion]);
+  }, [roomId, p2pRole, hydrateQuestion, showConnectModal]);
 
   // State updater that auto-broadcasts locally and to remote devices
   const updateState = useCallback(
@@ -462,6 +485,8 @@ export default function App() {
         roomId={roomId}
         onRoomChange={handleRoomChange}
         onOpenAudience={() => { setShowConnectModal(false); setReturnToHostAvailable(true); setScreenMode('audience'); }}
+        p2pConnected={p2pConnected}
+        serverConnected={serverConnected}
       />
     </div>
   );

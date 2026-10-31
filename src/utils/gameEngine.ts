@@ -1,4 +1,5 @@
 import { GameState } from '../types/game';
+import { QUESTION_BANK } from '../data/questionBank';
 
 export const ROUND_MULTIPLIERS = [1, 1, 2, 3] as const;
 
@@ -48,6 +49,29 @@ export function getTimerRemaining(state: Pick<GameState, 'timerRunning' | 'timer
 }
 
 export function normalizeLoadedState(state: GameState): GameState {
+  const isHardBatchQuestion =
+    !state.currentQuestion ||
+    !Array.isArray(state.currentQuestion.answers) ||
+    (state.currentQuestion.id >= 10000 && state.currentQuestion.id < 999999);
+
+  if (isHardBatchQuestion) {
+    const firstEasy = QUESTION_BANK[0];
+    return {
+      ...state,
+      currentQuestion: firstEasy,
+      revealedAnswers: new Array(firstEasy.answers.length).fill(false),
+      roundBank: 0,
+      burntQuestionIds: [firstEasy.id],
+      timerSeconds: state.timerSeconds ?? 30,
+      timerRunning: state.timerRunning ?? false,
+      timerEndsAt: state.timerEndsAt ?? null,
+      volume: state.volume ?? 0.8,
+      muted: state.muted ?? false,
+      awardedRound: state.awardedRound ?? null,
+      actionId: state.actionId ?? 0,
+    };
+  }
+
   return {
     ...state,
     timerSeconds: state.timerSeconds ?? 30,
@@ -59,3 +83,4 @@ export function normalizeLoadedState(state: GameState): GameState {
     actionId: state.actionId ?? 0,
   };
 }
+

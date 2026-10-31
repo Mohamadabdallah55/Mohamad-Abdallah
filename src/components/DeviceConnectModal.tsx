@@ -7,6 +7,8 @@ interface DeviceConnectModalProps {
   roomId: string;
   onRoomChange: (newRoom: string) => void;
   onOpenAudience?: () => void;
+  p2pConnected?: boolean;
+  serverConnected?: boolean;
 }
 
 export function DeviceConnectModal({
@@ -15,48 +17,53 @@ export function DeviceConnectModal({
   roomId,
   onRoomChange,
   onOpenAudience,
+  p2pConnected = false,
+  serverConnected = false,
 }: DeviceConnectModalProps) {
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [copiedHost, setCopiedHost] = useState<boolean>(false);
   const [copiedAudience, setCopiedAudience] = useState<boolean>(false);
   const [inputRoom, setInputRoom] = useState<string>(roomId);
-  
-  // Custom domain support
-  const [customDomain, setCustomDomain] = useState<string>(() => {
+
+  const getDefaultOrigin = () => {
     if (typeof window === 'undefined') return '';
-    const saved = localStorage.getItem('feud_custom_domain');
-    if (saved) return saved;
+    const basePath = window.location.pathname.replace(/\/(host|play|admin)\/?$/, '').replace(/\/+$/, '');
+    return `${window.location.origin}${basePath}`;
+  };
 
-    // Try detecting parent origin if inside iframe
-    try {
-      if (window.location.ancestorOrigins && window.location.ancestorOrigins.length > 0) {
-        const ancestor = window.location.ancestorOrigins[0];
-        if (ancestor && !ancestor.includes('aistudio') && !ancestor.includes('google.com')) {
-          return ancestor;
-        }
-      }
-    } catch {
-      // ignore
-    }
-
-    return window.location.origin;
-  });
-
+  // Always prefer the live deployed origin unless user explicitly edits it in this session
+  const [customDomain, setCustomDomain] = useState<string>(() => getDefaultOrigin());
   const [isEditingDomain, setIsEditingDomain] = useState<boolean>(false);
-  const [domainInput, setDomainInput] = useState<string>(customDomain);
+  const [domainInput, setDomainInput] = useState<string>(() => getDefaultOrigin());
 
   useEffect(() => {
-    if (!isOpen || !/^(localhost|127\.0\.0\.1)$/.test(window.location.hostname) || localStorage.getItem('feud_custom_domain')) return;
-    fetch('/api/connect-info').then((response) => response.ok ? response.json() : null).then((data) => {
-      if (data?.localUrl) { setCustomDomain(data.localUrl); setDomainInput(data.localUrl); }
-    }).catch(() => {});
+    setInputRoom(roomId);
+  }, [roomId]);
+
+  useEffect(() => {
+    if (!isOpen || typeof window === 'undefined') return;
+    if (/^(localhost|127\.0\.0\.1)$/.test(window.location.hostname)) {
+      fetch('/api/connect-info')
+        .then((response) => (response.ok ? response.json() : null))
+        .then((data) => {
+          if (data?.localUrl) {
+            setCustomDomain(data.localUrl);
+            setDomainInput(data.localUrl);
+          }
+        })
+        .catch(() => {});
+    } else {
+      const currentOrigin = getDefaultOrigin();
+      setCustomDomain(currentOrigin);
+      setDomainInput(currentOrigin);
+    }
   }, [isOpen]);
 
   // Helper to get sanitized base URL
   const getBaseUrl = (): string => {
     let base = customDomain.trim();
     if (!base) {
-      base = typeof window !== 'undefined' ? window.location.origin : '';
+      base = getDefaultOrigin();
     }
     if (base && !base.startsWith('http://') && !base.startsWith('https://')) {
       base = `https://${base}`;
@@ -64,14 +71,15 @@ export function DeviceConnectModal({
     return base.replace(/\/+$/, '');
   };
 
+  // Root query URL (?mode=host&room=...) works on 100% of static & dynamic hosts without 404s
   const getHostUrl = () => {
     const base = getBaseUrl();
-    return `${base}/host?room=${encodeURIComponent(roomId)}`;
+    return `${base}/?mode=host&room=${encodeURIComponent(roomId)}#remote`;
   };
 
   const getAudienceUrl = () => {
     const base = getBaseUrl();
-    return `${base}/play?room=${encodeURIComponent(roomId)}`;
+    return `${base}/?mode=audience&room=${encodeURIComponent(roomId)}`;
   };
 
   // Generate QR code whenever isOpen, roomId, or customDomain changes
@@ -118,25 +126,21 @@ export function DeviceConnectModal({
     }
     sanitized = sanitized.replace(/\/+$/, '');
     setCustomDomain(sanitized);
-    localStorage.setItem('feud_custom_domain', sanitized);
     setIsEditingDomain(false);
   };
 
   const handleResetToCurrentOrigin = () => {
-    if (typeof window !== 'undefined') {
-      const orig = window.location.origin;
-      setCustomDomain(orig);
-      setDomainInput(orig);
-      localStorage.removeItem('feud_custom_domain');
-      setIsEditingDomain(false);
-    }
+    const orig = getDefaultOrigin();
+    setCustomDomain(orig);
+    setDomainInput(orig);
+    setIsEditingDomain(false);
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-3 md:p-4 backdrop-blur-md overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-3 md:p-4 backdrop-blur-md overflow-y-auto" dir="rtl">
       <div className="flex max-h-[92vh] w-full max-w-lg flex-col overflow-y-auto rounded-3xl border-2 border-amber-400 bg-slate-900 p-4 md:p-6 shadow-2xl text-slate-100">
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
+        <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-3">
           <div className="flex items-center gap-2">
             <span className="text-2xl">📱 ➔ 📺</span>
             <div>
@@ -144,7 +148,7 @@ export function DeviceConnectModal({
                 ربط الهاتف بشاشة العرض
               </h3>
               <p className="text-xs text-amber-300/80">
-                (جوال للتحكم + شاشة تلفزيون أو كمبيوتر للعرض)
+                (جوال للتحكم + شاشة تلفزيون أو لابتوب للعرض)
               </p>
             </div>
           </div>
@@ -156,12 +160,45 @@ export function DeviceConnectModal({
           </button>
         </div>
 
+        {/* Live Connection Status Banner */}
+        <div
+          className={`mb-3 flex items-center justify-between rounded-2xl border px-3.5 py-2.5 text-xs font-bold ${
+            p2pConnected
+              ? 'border-emerald-400 bg-emerald-950/70 text-emerald-200'
+              : serverConnected
+                ? 'border-amber-400/60 bg-amber-950/50 text-amber-200'
+                : 'border-blue-400/50 bg-blue-950/50 text-blue-200'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <span
+              className={`h-2.5 w-2.5 rounded-full ${
+                p2pConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400 animate-ping'
+              }`}
+            />
+            <span>
+              {p2pConnected
+                ? `🟢 تم ربط الجوال بالشاشة بنجاح! (الغرفة: ${roomId})`
+                : `⏳ بانتظار مسح الباركود من الجوال... (الغرفة: ${roomId})`}
+            </span>
+          </div>
+          {p2pConnected && onOpenAudience && (
+            <button
+              type="button"
+              onClick={onOpenAudience}
+              className="rounded-lg bg-emerald-500 px-2.5 py-1 text-[11px] font-black text-slate-950 hover:bg-emerald-400"
+            >
+              عرض الشاشة الآن 📺
+            </button>
+          )}
+        </div>
+
         {/* Custom Domain Configuration Box */}
         <div className="rounded-2xl border border-blue-500/40 bg-blue-950/30 p-3 mb-3">
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-xs font-bold text-blue-200 flex items-center gap-1">
               <span>🌐</span>
-              <span>دومين الموقع للباركود (Custom Domain):</span>
+              <span>الرابط المستخدم للباركود:</span>
             </span>
             {!isEditingDomain ? (
               <button
@@ -172,7 +209,7 @@ export function DeviceConnectModal({
                 }}
                 className="text-[11px] font-bold text-amber-400 hover:underline"
               >
-                تغيير الدومين ✏️
+                تعديل الرابط ✏️
               </button>
             ) : (
               <button
@@ -186,25 +223,26 @@ export function DeviceConnectModal({
           </div>
 
           {!isEditingDomain ? (
-            <div className="flex items-center justify-between rounded-xl bg-slate-950 px-3 py-1.5 text-xs font-mono text-emerald-400 border border-slate-800">
+            <div className="flex items-center justify-between rounded-xl bg-slate-950 px-3 py-1.5 text-xs font-mono text-emerald-400 border border-slate-800" dir="ltr">
               <span className="truncate">{getBaseUrl()}</span>
-              <span className="shrink-0 text-[10px] text-slate-400 mr-2">مفعّل للباركود ✓</span>
+              <span className="shrink-0 text-[10px] text-slate-400 ml-2">نشط ✓</span>
             </div>
           ) : (
             <form onSubmit={handleSaveDomain} className="space-y-2 mt-1">
               <div className="flex gap-2">
                 <input
                   type="text"
+                  dir="ltr"
                   value={domainInput}
                   onChange={(e) => setDomainInput(e.target.value)}
-                  placeholder="مثال: https://yourdomain.com"
+                  placeholder="https://yourdomain.com"
                   className="flex-1 rounded-xl border border-blue-500/50 bg-slate-950 px-3 py-1.5 text-xs font-mono text-white placeholder-slate-500"
                 />
                 <button
                   type="submit"
                   className="shrink-0 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-500"
                 >
-                  حفظ الدومين ✓
+                  حفظ ✓
                 </button>
               </div>
               <button
@@ -212,7 +250,7 @@ export function DeviceConnectModal({
                 onClick={handleResetToCurrentOrigin}
                 className="text-[10px] text-slate-400 hover:text-amber-300 underline block"
               >
-                استعادة رابط المتصفح الحالي تلقائياً
+                استعادة رابط الموقع الحالي تلقائياً
               </button>
             </form>
           )}
@@ -230,9 +268,10 @@ export function DeviceConnectModal({
           <form onSubmit={handleApplyRoom} className="flex gap-2">
             <input
               type="text"
+              dir="ltr"
               value={inputRoom}
               onChange={(e) => setInputRoom(e.target.value.toUpperCase())}
-              placeholder="اكتب رمز الغرفة..."
+              placeholder="FEUD-1234"
               className="flex-1 rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-mono uppercase text-white"
             />
             <button
@@ -267,7 +306,7 @@ export function DeviceConnectModal({
 
           {/* Direct Host URL display & Copy */}
           <div className="mt-3 w-full">
-            <div className="mb-2 flex items-center gap-1.5 rounded-xl bg-slate-950 p-1.5 border border-slate-800">
+            <div className="mb-2 flex items-center gap-1.5 rounded-xl bg-slate-950 p-1.5 border border-slate-800" dir="ltr">
               <input
                 type="text"
                 readOnly
@@ -290,7 +329,7 @@ export function DeviceConnectModal({
           <span className="font-bold text-amber-300 block mb-1">
             📺 رابط شاشة التلفزيون (Audience Screen):
           </span>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2" dir="ltr">
             <input
               type="text"
               readOnly
@@ -305,18 +344,15 @@ export function DeviceConnectModal({
               {copiedAudience ? '✓ تم' : 'نسخ'}
             </button>
           </div>
-          {onOpenAudience && <button type="button" onClick={onOpenAudience} className="mt-3 w-full rounded-xl bg-amber-500 px-4 py-2.5 text-sm font-black text-slate-950">📺 شغّل شاشة الجمهور على هذا الجهاز</button>}
-        </div>
-
-        {/* Summary note */}
-        <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/30 p-3 text-[11px] text-emerald-200 leading-relaxed space-y-1">
-          <div className="flex items-center gap-1.5 font-bold text-emerald-300">
-            <span>⚡</span>
-            <span>خطوتان للربط:</span>
-          </div>
-          <p>
-            افتح شاشة الجمهور على اللابتوب، ثم امسح الرمز بالهاتف. يجب أن يكون الجهازان على الشبكة نفسها عند استخدام رابط محلي. يظهر الاتصال في لوحة المقدم عند نجاح الربط.
-          </p>
+          {onOpenAudience && (
+            <button
+              type="button"
+              onClick={onOpenAudience}
+              className="mt-3 w-full rounded-xl bg-amber-500 px-4 py-2.5 text-sm font-black text-slate-950 hover:bg-amber-400 transition-colors"
+            >
+              📺 شغّل شاشة الجمهور على هذا الجهاز
+            </button>
+          )}
         </div>
       </div>
     </div>

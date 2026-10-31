@@ -34,11 +34,14 @@ export function HostController({
 }: HostControllerProps) {
   const [questionBank, setQuestionBank] = useState<Question[]>(() => {
     try {
-      const saved = localStorage.getItem('family_challenge_questions_v1');
-      if (saved) return JSON.parse(saved) as Question[];
-      const legacy = localStorage.getItem('family_feud_questions_v3');
-      const custom = legacy ? (JSON.parse(legacy) as Question[]).filter((question) => Number(question.id) >= 1_000_000_000_000) : [];
-      return [...QUESTION_BANK, ...custom];
+      const saved = localStorage.getItem('family_feud_easy_questions_v2');
+      if (saved) {
+        const parsed = JSON.parse(saved) as Question[];
+        if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].id < 10000) {
+          return parsed;
+        }
+      }
+      return QUESTION_BANK;
     } catch { return QUESTION_BANK; }
   });
   const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
@@ -257,7 +260,7 @@ export function HostController({
 
   const persistQuestionBank = (next: Question[]) => {
     setQuestionBank(next);
-    try { localStorage.setItem('family_challenge_questions_v1', JSON.stringify(next)); } catch { setBankMessage('تعذر حفظ البنك على هذا الجهاز'); }
+    try { localStorage.setItem('family_feud_easy_questions_v2', JSON.stringify(next)); } catch { setBankMessage('تعذر حفظ البنك على هذا الجهاز'); }
   };
 
   const exportQuestionBank = (format: 'json' | 'csv') => {
@@ -383,10 +386,10 @@ export function HostController({
 
       {/* Main Simplified Command Center */}
       <main className="host-main mx-auto max-w-4xl space-y-4">
-        {/* Connection status: a reachable API does not prove that a TV has joined. */}
+        {/* Connection status */}
         <div
           className={`host-connection flex items-center justify-between px-3.5 py-2 rounded-2xl border text-xs font-bold transition-all shadow-sm ${
-            p2pConnected
+            p2pConnected || serverConnected
               ? 'bg-emerald-950/70 border-emerald-500/60 text-emerald-300 shadow-[0_0_15px_rgba(16,185,129,0.2)]'
               : 'bg-amber-950/70 border-amber-500/60 text-amber-300 shadow-[0_0_15px_rgba(245,158,11,0.2)]'
           }`}
@@ -394,15 +397,15 @@ export function HostController({
           <div className="flex items-center gap-2">
             <span
               className={`h-2.5 w-2.5 rounded-full ${
-                p2pConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400 animate-ping'
+                p2pConnected || serverConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400 animate-ping'
               }`}
             />
             <span>
               {p2pConnected
-                ? `🟢 متصل بالشاشة مباشرة عبر P2P (الغرفة: ${roomId})`
+                ? `🟢 متصل بشاشة التلفزيون مباشرة (الغرفة: ${roomId})`
                 : serverConnected
-                  ? `🟡 الخادم متاح؛ افتح شاشة الجمهور برمز ${roomId}`
-                  : `🟡 شاشة الجمهور غير متصلة؛ افتحها برمز ${roomId}`}
+                  ? `🟢 متصل بالخادم المباشر (الغرفة: ${roomId})`
+                  : `🟡 جاري البحث عن شاشة العرض... (الغرفة: ${roomId})`}
             </span>
           </div>
           <button type="button" onClick={onOpenConnectModal} className="font-mono text-[11px] bg-black/50 border border-slate-700 px-2 py-1 rounded-lg text-white shrink-0">
