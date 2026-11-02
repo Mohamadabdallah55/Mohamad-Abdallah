@@ -27,13 +27,36 @@ export function HostController({
   p2pConnected = false,
   serverConnected = false,
   roomId = 'FEUD',
+  onUndo,
+  onRestartGame,
+  canUndo = false,
 }: HostControllerProps) {
-  const questionBank = QUESTION_BANK;
+  const [customQuestions, setCustomQuestions] = useState<Question[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const saved = localStorage.getItem('family_feud_custom_questions');
+      return saved ? (JSON.parse(saved) as Question[]) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const questionBank = [...customQuestions, ...QUESTION_BANK];
   const revealLock = useRef(new Map<number, number>());
   const [selectedCategory, setSelectedCategory] = useState<string>('الكل');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showQuestionsDrawer, setShowQuestionsDrawer] = useState<boolean>(false);
   const [showTeamEditModal, setShowTeamEditModal] = useState<boolean>(false);
+  const [showAddQuestionForm, setShowAddQuestionForm] = useState<boolean>(false);
+  const [newQText, setNewQText] = useState<string>('');
+  const [newQCategory, setNewQCategory] = useState<string>('أسئلة خاصة');
+  const [newQAnswers, setNewQAnswers] = useState<{ text: string; points: number }[]>([
+    { text: '', points: 35 },
+    { text: '', points: 25 },
+    { text: '', points: 20 },
+    { text: '', points: 12 },
+    { text: '', points: 8 },
+  ]);
 
   const categories = ['الكل', ...new Set(questionBank.map((question) => question.category))];
 
@@ -79,6 +102,34 @@ export function HostController({
     if (shouldReveal) {
       triggerSound('chime');
     }
+  };
+
+  // Reveal all remaining unrevealed answers on TV WITHOUT adding points to bank (classic end-of-round reveal)
+  const handleRevealAllWithoutPoints = () => {
+    if (!state.currentQuestion) return;
+    triggerHaptic([50, 30, 50]);
+    triggerSound('chime');
+    updateState((prev) => {
+      if (!prev.currentQuestion) return prev;
+      return {
+        ...prev,
+        revealedAnswers: new Array(prev.currentQuestion.answers.length).fill(true),
+      };
+    });
+  };
+
+  // Hide all answers on board and reset round bank to 0
+  const handleHideAllAnswers = () => {
+    if (!state.currentQuestion) return;
+    triggerHaptic(40);
+    updateState((prev) => {
+      if (!prev.currentQuestion) return prev;
+      return {
+        ...prev,
+        revealedAnswers: new Array(prev.currentQuestion.answers.length).fill(false),
+        roundBank: 0,
+      };
+    });
   };
 
   // Trigger strike - works anytime, even after 3 strikes to flash the X overlay & buzzer
@@ -128,7 +179,7 @@ export function HostController({
   // Award round bank to Team A or Team B anytime
   const handleAwardBank = (team: 'A' | 'B') => {
     triggerHaptic([80, 40, 80, 40, 160]);
-    triggerSound('applause');
+    triggerSound('bell');
     updateState((prev) => {
       const pointsToAward = prev.roundBank;
       return {
@@ -225,6 +276,40 @@ export function HostController({
     setShowQuestionsDrawer(false);
   };
 
+  // Save a new custom question created on the phone
+  const handleCreateCustomQuestion = () => {
+    const cleanText = newQText.trim();
+    const validAnswers = newQAnswers
+      .map((a) => ({ text: a.text.trim(), points: Math.max(1, Number(a.points) || 10) }))
+      .filter((a) => a.text.length > 0);
+
+    if (!cleanText || validAnswers.length === 0) return;
+
+    const created: Question = {
+      id: Date.now(),
+      category: newQCategory.trim() || 'أسئلة خاصة',
+      questionText: cleanText,
+      answers: validAnswers,
+    };
+
+    const updatedCustom = [created, ...customQuestions];
+    setCustomQuestions(updatedCustom);
+    try {
+      localStorage.setItem('family_feud_custom_questions', JSON.stringify(updatedCustom));
+    } catch {}
+
+    setNewQText('');
+    setNewQAnswers([
+      { text: '', points: 35 },
+      { text: '', points: 25 },
+      { text: '', points: 20 },
+      { text: '', points: 12 },
+      { text: '', points: 8 },
+    ]);
+    setShowAddQuestionForm(false);
+    handleSelectQuestion(created);
+  };
+
   const filteredQuestions = questionBank.filter((q) => {
     const matchesCat = selectedCategory === 'الكل' || selectedCategory === 'all' || q.category === selectedCategory;
     const matchesQuery =
@@ -238,10 +323,24 @@ export function HostController({
     <div className="min-h-screen bg-slate-950 text-slate-100 p-3 md:p-6 pb-24" dir="rtl">
       {/* Top Header: Logos & Primary Navigation */}
       <header className="mx-auto max-w-4xl flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4 mb-4">
-        <div className="flex items-center gap-3">
-          <div className="rounded-2xl border-2 border-amber-400 bg-gradient-to-b from-blue-800 to-blue-950 px-4 py-2 font-display text-sm font-black text-amber-200">
+        <div className="flex items-center gap-2">
+          <div className="rounded-2xl border-2 border-amber-400 bg-gradient-to-b from-blue-800 to-blue-950 px-3.5 py-2 font-display text-xs sm:text-sm font-black text-amber-200">
             تحدّي العائلة · تحكم المقدم
           </div>
+          {onUndo && (
+            <button
+              type="button"
+              onClick={() => {
+                triggerHaptic(35);
+                onUndo();
+              }}
+              disabled={!canUndo}
+              className="rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-800 disabled:opacity-40 active:scale-95 transition-all"
+              title="تراجع عن آخر حركة"
+            >
+              ↶ تراجع
+            </button>
+          )}
         </div>
 
         {/* Clear Action Buttons */}
@@ -344,13 +443,20 @@ export function HostController({
           </div>
 
           {/* Round Bank */}
-          <div className="rounded-2xl border-2 border-amber-400/80 bg-amber-950/30 p-3">
+          <div className="rounded-2xl border-2 border-amber-400/80 bg-amber-950/30 p-3 flex flex-col justify-between">
             <span className="text-[11px] md:text-xs font-black text-amber-300 uppercase block">
               بنك الجولة {state.currentRound}/4 {state.roundMultiplier > 1 ? `(×${state.roundMultiplier})` : ''}
             </span>
             <div className="font-display font-black text-3xl md:text-5xl text-amber-300 tabular-nums">
               <AnimatedCounter value={state.roundBank} />
             </div>
+            <button
+              type="button"
+              onClick={() => handleSetTurn(state.activeTeam === 'A' ? 'B' : 'A')}
+              className="mt-1 rounded-lg bg-slate-800/90 border border-slate-700 py-0.5 px-2 text-[10px] font-bold text-slate-300 hover:text-white"
+            >
+              ⇄ تبديل الدور
+            </button>
           </div>
 
           {/* Team B */}
@@ -383,13 +489,13 @@ export function HostController({
 
         {/* 2. Current Question Box & Hidden Answers List (Mobile Remote Pro) */}
         <div className="rounded-3xl border-2 border-blue-500/40 bg-gradient-to-b from-blue-950 to-slate-950 p-4 md:p-6">
-          <div className="flex items-center justify-between border-b border-blue-500/20 pb-2.5 mb-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-blue-500/20 pb-2.5 mb-3">
             <div className="flex items-center gap-2">
               <span className="rounded-lg bg-blue-500/20 px-2.5 py-1 text-xs font-bold text-blue-300">
                 سؤال الجولة {state.currentRound} · {state.currentQuestion?.category}
               </span>
               <span className="text-[11px] text-amber-400/90 font-bold hidden sm:inline">
-                (الإجابات ظاهرة لك فقط حتى تكشفها)
+                (اضغط على أي إجابة لكشفها أو إخفائها في أي وقت)
               </span>
             </div>
             <button
@@ -464,6 +570,24 @@ export function HostController({
               );
             })}
           </div>
+
+          {/* Quick Board Reveal / Hide Helpers (Without Changing Points) */}
+          <div className="mt-3 pt-3 border-t border-blue-500/20 flex flex-wrap items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={handleRevealAllWithoutPoints}
+              className="flex-1 rounded-xl border border-emerald-500/50 bg-emerald-950/50 py-2 px-3 text-xs font-bold text-emerald-300 hover:bg-emerald-900/60 active:scale-95 transition-all"
+            >
+              👁️ كشف باقي الإجابات للجمهور (بدون نقاط)
+            </button>
+            <button
+              type="button"
+              onClick={handleHideAllAnswers}
+              className="rounded-xl border border-slate-700 bg-slate-900 py-2 px-3 text-xs font-bold text-slate-400 hover:text-white active:scale-95 transition-all"
+            >
+              🙈 إخفاء الكل
+            </button>
+          </div>
         </div>
 
         {/* 4. Giant Strike Button & Steal Actions (Touch-Friendly) */}
@@ -534,10 +658,10 @@ export function HostController({
           </div>
 
           {/* 6. Advance to Next Round */}
-          <div className="flex items-center gap-2 pt-1">
+          <div className="flex flex-wrap items-center gap-2 pt-1">
             <button
               onClick={handleNextRound}
-              className="flex-1 rounded-2xl border-2 border-amber-400 bg-gradient-to-r from-amber-500 to-amber-600 py-3 font-display font-black text-sm md:text-base text-slate-950 hover:brightness-110 active:scale-95 transition-all"
+              className="flex-1 rounded-2xl border-2 border-amber-400 bg-gradient-to-r from-amber-500 to-amber-600 py-3 px-4 font-display font-black text-sm md:text-base text-slate-950 hover:brightness-110 active:scale-95 transition-all"
             >
               {state.currentRound < 4
                 ? `الانتقال للجولة ${state.currentRound + 1} (سؤال جديد) ⏭`
@@ -549,6 +673,14 @@ export function HostController({
             >
               تعديل الفرق ✏️
             </button>
+            {onRestartGame && (
+              <button
+                onClick={onRestartGame}
+                className="rounded-2xl border border-red-500/40 bg-red-950/40 px-3.5 py-3 text-xs font-bold text-red-300 hover:bg-red-900/50"
+              >
+                تصفير اللعبة ↺
+              </button>
+            )}
           </div>
         </div>
 
@@ -582,10 +714,10 @@ export function HostController({
               🛎 جرس
             </button>
             <button
-              onClick={() => triggerSound('applause')}
+              onClick={() => triggerSound('steal')}
               className="rounded-lg bg-slate-800 px-2.5 py-1 text-xs font-bold text-emerald-300 hover:bg-slate-700"
             >
-              👏 تصفيق
+              ⚡ نغمة حماس
             </button>
             <button
               onClick={() => triggerSound('fanfare')}
@@ -605,65 +737,145 @@ export function HostController({
               <h3 className="font-display font-extrabold text-lg text-white">
                 بنك الأسئلة ({questionBank.length} سؤال)
               </h3>
-              <button
-                onClick={() => setShowQuestionsDrawer(false)}
-                className="rounded-xl bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-300"
-              >
-                إغلاق ✕
-              </button>
-            </div>
-
-            <div className="p-3 border-b border-slate-800 space-y-2">
-              <input
-                type="text"
-                placeholder="ابحث في الأسئلة أو الأجوبة..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white"
-              />
-              <div className="flex flex-wrap gap-1">
-                {categories.map((cat) => (
-                  <button
-                    key={cat}
-                    onClick={() => setSelectedCategory(cat)}
-                    className={`rounded-lg px-2.5 py-1 text-xs font-bold transition-colors ${
-                      selectedCategory === cat
-                        ? 'bg-amber-500 text-slate-950'
-                        : 'bg-slate-800 text-slate-400'
-                    }`}
-                  >
-                    {cat}
-                  </button>
-                ))}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAddQuestionForm((v) => !v)}
+                  className="rounded-xl bg-amber-500 px-3 py-1.5 text-xs font-black text-slate-950 hover:bg-amber-400"
+                >
+                  {showAddQuestionForm ? 'العودة للقائمة' : '➕ إضافة سؤال خاص'}
+                </button>
+                <button
+                  onClick={() => setShowQuestionsDrawer(false)}
+                  className="rounded-xl bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-300"
+                >
+                  إغلاق ✕
+                </button>
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-3 space-y-2">
-              {filteredQuestions.map((q) => (
-                <div
-                  key={q.id}
-                  onClick={() => handleSelectQuestion(q)}
-                  className="cursor-pointer rounded-xl border border-slate-800 bg-slate-950 hover:border-amber-400/60 p-3 flex items-center justify-between gap-3 transition-colors"
-                >
-                  <div>
-                    <span className="text-[10px] text-amber-400 font-bold">
-                      #{q.id} · {q.category}
-                    </span>
-                    <h4 className="font-bold text-sm text-white">{q.questionText}</h4>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleSelectQuestion(q);
-                    }}
-                    className="shrink-0 rounded-lg bg-blue-600 hover:bg-blue-500 px-3 py-1.5 text-xs font-bold text-white"
-                  >
-                    اختيار ➔
-                  </button>
+            {showAddQuestionForm ? (
+              <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                <div>
+                  <label className="text-xs font-bold text-slate-300 block mb-1">نص السؤال:</label>
+                  <input
+                    type="text"
+                    placeholder="مثال: اذكر شيئاً يفعله المسلم يوم الجمعة..."
+                    value={newQText}
+                    onChange={(e) => setNewQText(e.target.value)}
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
+                  />
                 </div>
-              ))}
-            </div>
+                <div>
+                  <label className="text-xs font-bold text-slate-300 block mb-1">التصنيف:</label>
+                  <input
+                    type="text"
+                    value={newQCategory}
+                    onChange={(e) => setNewQCategory(e.target.value)}
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-amber-300 block">الإجابات والنقاط:</label>
+                  {newQAnswers.map((ans, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <span className="w-6 text-center text-xs font-black text-amber-400">{idx + 1}</span>
+                      <input
+                        type="text"
+                        placeholder={`الإجابة ${idx + 1}`}
+                        value={ans.text}
+                        onChange={(e) => {
+                          const next = [...newQAnswers];
+                          next[idx] = { ...next[idx], text: e.target.value };
+                          setNewQAnswers(next);
+                        }}
+                        className="flex-1 rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs text-white"
+                      />
+                      <input
+                        type="number"
+                        value={ans.points}
+                        onChange={(e) => {
+                          const next = [...newQAnswers];
+                          next[idx] = { ...next[idx], points: Number(e.target.value) || 0 };
+                          setNewQAnswers(next);
+                        }}
+                        className="w-20 rounded-xl border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-amber-300 text-center font-bold"
+                      />
+                    </div>
+                  ))}
+                  {newQAnswers.length < 8 && (
+                    <button
+                      type="button"
+                      onClick={() => setNewQAnswers([...newQAnswers, { text: '', points: 5 }])}
+                      className="text-xs font-bold text-blue-400 hover:text-blue-300"
+                    >
+                      + إضافة خانة إجابة أخرى
+                    </button>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCreateCustomQuestion}
+                  className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-500 py-2.5 text-sm font-black text-white"
+                >
+                  حفظ وتشغيل السؤال الآن ✔
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="p-3 border-b border-slate-800 space-y-2">
+                  <input
+                    type="text"
+                    placeholder="ابحث في الأسئلة أو الأجوبة..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white"
+                  />
+                  <div className="flex flex-wrap gap-1">
+                    {categories.map((cat) => (
+                      <button
+                        key={cat}
+                        onClick={() => setSelectedCategory(cat)}
+                        className={`rounded-lg px-2.5 py-1 text-xs font-bold transition-colors ${
+                          selectedCategory === cat
+                            ? 'bg-amber-500 text-slate-950'
+                            : 'bg-slate-800 text-slate-400'
+                        }`}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                  {filteredQuestions.map((q) => (
+                    <div
+                      key={q.id}
+                      onClick={() => handleSelectQuestion(q)}
+                      className="cursor-pointer rounded-xl border border-slate-800 bg-slate-950 hover:border-amber-400/60 p-3 flex items-center justify-between gap-3 transition-colors"
+                    >
+                      <div>
+                        <span className="text-[10px] text-amber-400 font-bold">
+                          #{q.id} · {q.category}
+                        </span>
+                        <h4 className="font-bold text-sm text-white">{q.questionText}</h4>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSelectQuestion(q);
+                        }}
+                        className="shrink-0 rounded-lg bg-blue-600 hover:bg-blue-500 px-3 py-1.5 text-xs font-bold text-white"
+                      >
+                        اختيار ➔
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -675,60 +887,113 @@ export function HostController({
             <h3 className="font-display font-bold text-lg text-white mb-3">
               تعديل أسماء ونقاط الفرق
             </h3>
-            <div className="space-y-3">
-              <div>
-                <label className="text-xs text-slate-400 font-bold block mb-1">اسم الفريق الأول:</label>
-                <input
-                  type="text"
-                  value={state.teamA.name}
-                  onChange={(e) => {
-                    const name = e.target.value;
-                    updateState((prev) => ({ ...prev, teamA: { ...prev.teamA, name } }));
-                  }}
-                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-sm text-white"
-                />
+            <div className="space-y-4">
+              {/* Team A */}
+              <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3 space-y-2">
+                <div>
+                  <label className="text-xs text-blue-300 font-bold block mb-1">اسم الفريق الأول:</label>
+                  <input
+                    type="text"
+                    value={state.teamA.name}
+                    onChange={(e) => {
+                      const name = e.target.value;
+                      updateState((prev) => ({ ...prev, teamA: { ...prev.teamA, name } }));
+                    }}
+                    className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-400 font-bold block mb-1">نقاط الفريق الأول:</label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="number"
+                      value={state.teamA.score}
+                      onChange={(e) => {
+                        const score = Number(e.target.value) || 0;
+                        updateState((prev) => ({ ...prev, teamA: { ...prev.teamA, score } }));
+                      }}
+                      className="w-24 rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm font-bold text-white text-center"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => updateState((prev) => ({ ...prev, teamA: { ...prev.teamA, score: prev.teamA.score + 10 } }))}
+                      className="rounded-lg bg-emerald-700 px-2.5 py-1.5 text-xs font-bold text-white"
+                    >
+                      +10
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateState((prev) => ({ ...prev, teamA: { ...prev.teamA, score: Math.max(0, prev.teamA.score - 10) } }))}
+                      className="rounded-lg bg-red-800 px-2.5 py-1.5 text-xs font-bold text-white"
+                    >
+                      -10
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateState((prev) => ({ ...prev, teamA: { ...prev.teamA, score: 0 } }))}
+                      className="rounded-lg bg-slate-800 px-2 py-1.5 text-xs text-slate-300"
+                    >
+                      0
+                    </button>
+                  </div>
+                </div>
               </div>
-              <div>
-                <label className="text-xs text-slate-400 font-bold block mb-1">نقاط الفريق الأول:</label>
-                <input
-                  type="number"
-                  value={state.teamA.score}
-                  onChange={(e) => {
-                    const score = Number(e.target.value) || 0;
-                    updateState((prev) => ({ ...prev, teamA: { ...prev.teamA, score } }));
-                  }}
-                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-sm text-white"
-                />
-              </div>
-              <div>
-                <label className="text-xs text-slate-400 font-bold block mb-1">اسم الفريق الثاني:</label>
-                <input
-                  type="text"
-                  value={state.teamB.name}
-                  onChange={(e) => {
-                    const name = e.target.value;
-                    updateState((prev) => ({ ...prev, teamB: { ...prev.teamB, name } }));
-                  }}
-                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-sm text-white"
-                />
-              </div>
-              <div>
-                <label className="text-xs text-slate-400 font-bold block mb-1">نقاط الفريق الثاني:</label>
-                <input
-                  type="number"
-                  value={state.teamB.score}
-                  onChange={(e) => {
-                    const score = Number(e.target.value) || 0;
-                    updateState((prev) => ({ ...prev, teamB: { ...prev.teamB, score } }));
-                  }}
-                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-sm text-white"
-                />
+
+              {/* Team B */}
+              <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3 space-y-2">
+                <div>
+                  <label className="text-xs text-indigo-300 font-bold block mb-1">اسم الفريق الثاني:</label>
+                  <input
+                    type="text"
+                    value={state.teamB.name}
+                    onChange={(e) => {
+                      const name = e.target.value;
+                      updateState((prev) => ({ ...prev, teamB: { ...prev.teamB, name } }));
+                    }}
+                    className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-400 font-bold block mb-1">نقاط الفريق الثاني:</label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="number"
+                      value={state.teamB.score}
+                      onChange={(e) => {
+                        const score = Number(e.target.value) || 0;
+                        updateState((prev) => ({ ...prev, teamB: { ...prev.teamB, score } }));
+                      }}
+                      className="w-24 rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm font-bold text-white text-center"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => updateState((prev) => ({ ...prev, teamB: { ...prev.teamB, score: prev.teamB.score + 10 } }))}
+                      className="rounded-lg bg-emerald-700 px-2.5 py-1.5 text-xs font-bold text-white"
+                    >
+                      +10
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateState((prev) => ({ ...prev, teamB: { ...prev.teamB, score: Math.max(0, prev.teamB.score - 10) } }))}
+                      className="rounded-lg bg-red-800 px-2.5 py-1.5 text-xs font-bold text-white"
+                    >
+                      -10
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateState((prev) => ({ ...prev, teamB: { ...prev.teamB, score: 0 } }))}
+                      className="rounded-lg bg-slate-800 px-2 py-1.5 text-xs text-slate-300"
+                    >
+                      0
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
             <div className="mt-4 flex justify-end">
               <button
                 onClick={() => setShowTeamEditModal(false)}
-                className="rounded-xl bg-amber-500 px-4 py-1.5 text-xs font-bold text-slate-950 hover:bg-amber-400"
+                className="rounded-xl bg-amber-500 px-5 py-2 text-xs font-black text-slate-950 hover:bg-amber-400"
               >
                 تم الحفظ
               </button>

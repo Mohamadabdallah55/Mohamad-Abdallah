@@ -88,9 +88,24 @@ function getAudioContext(): AudioContext {
     audioCtx = new AudioContextClass();
   }
   if (audioCtx.state === 'suspended') {
-    audioCtx.resume();
+    void audioCtx.resume().catch(() => {});
   }
   return audioCtx;
+}
+
+// Automatically unlock Web Audio API on first user gesture on TV / Phone
+if (typeof window !== 'undefined') {
+  const unlockAudio = () => {
+    try {
+      const ctx = getAudioContext();
+      if (ctx.state === 'suspended') {
+        void ctx.resume().catch(() => {});
+      }
+    } catch {}
+  };
+  window.addEventListener('pointerdown', unlockAudio, { passive: true });
+  window.addEventListener('touchstart', unlockAudio, { passive: true });
+  window.addEventListener('keydown', unlockAudio, { passive: true });
 }
 
 /**

@@ -116,7 +116,12 @@ export default function App() {
 
   const hydrateQuestion = useCallback((incoming: GameState): GameState => {
     const localQuestion = gameStateRef.current?.currentQuestion;
-    const source = [localQuestion, ...QUESTION_BANK].find((q) => q?.id === incoming.currentQuestion?.id);
+    let customQuestions: typeof QUESTION_BANK = [];
+    try {
+      const raw = localStorage.getItem('family_feud_custom_questions');
+      if (raw) customQuestions = JSON.parse(raw);
+    } catch {}
+    const source = [localQuestion, ...customQuestions, ...QUESTION_BANK].find((q) => q?.id === incoming.currentQuestion?.id);
     if (!source || screenMode !== 'host') return normalizeLoadedState(incoming);
     return normalizeLoadedState({ ...incoming, currentQuestion: source });
   }, [screenMode]);
@@ -133,16 +138,22 @@ export default function App() {
   // Sync initial remote state from server (for Audience and newly connected Host)
   useEffect(() => {
     fetchRemoteState(roomId).then((remote) => {
-      if (!remote || (remote.roomId && remote.roomId !== roomId)) return;
       if (screenMode === 'audience') {
-        setGameState(hydrateQuestion(remote));
+        if (remote && (!remote.roomId || remote.roomId === roomId)) {
+          setGameState(hydrateQuestion(remote));
+        }
       } else {
-        // Ensure Host phone's actionId is always ahead of any existing room state
-        setGameState((current) => ({
-          ...current,
-          actionId: Math.max(current.actionId ?? 0, (remote.actionId ?? 0) + 1),
-          lastUpdated: Math.max(current.lastUpdated ?? 0, Date.now()),
-        }));
+        // Host is authoritative: bump version ahead of remote and immediately broadcast so TV & Phone match 100%
+        setGameState((current) => {
+          const synced: GameState = {
+            ...current,
+            roomId,
+            actionId: Math.max(current.actionId ?? 0, (remote?.actionId ?? 0) + 1),
+            lastUpdated: Date.now(),
+          };
+          broadcastGameState(synced, roomId);
+          return synced;
+        });
       }
     });
   }, [roomId, hydrateQuestion, screenMode]);
