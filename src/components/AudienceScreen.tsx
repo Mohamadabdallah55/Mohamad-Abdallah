@@ -7,10 +7,10 @@ import { AnimatedCounter } from './AnimatedCounter';
 import { Confetti } from './Confetti';
 import { ShowLogo } from './ShowLogo';
 
-interface Props { state: GameState; connected: boolean; serverOffset: number }
+interface Props { state: GameState; connected: boolean; serverOffset: number; onPair?: () => void }
 const status = { FACE_OFF: 'معقول تكون على اللوحة؟', GUESSING: 'مين رح يفتح الجواب الجاي؟', STEAL: 'فرصتكم تقلبوا الطاولة!', ROUND_OVER: 'هاي الجولة نار!', GAME_OVER: 'النتيجة النهائية' };
 
-export function AudienceScreen({ state: s, connected, serverOffset }: Props) {
+export function AudienceScreen({ state: s, connected, serverOffset, onPair }: Props) {
   const reduced = useReducedMotion();
   const [audio, setAudio] = useState(false);
   const [now, setNow] = useState(Date.now());
@@ -61,6 +61,7 @@ export function AudienceScreen({ state: s, connected, serverOffset }: Props) {
       <div className="tv-live"><span className={connected ? 'live-dot' : 'live-dot offline'} />{connected ? 'من المسرح' : 'جاري الربط'}</div>
       <ShowLogo />
       <div className="tv-options">
+        {onPair && <button onClick={onPair}>رمز التحكم</button>}
         {!audio && <button onClick={async () => setAudio(await unlockAudio())}>فعّل الصوت</button>}
         <button aria-label="ملء الشاشة" title="ملء الشاشة" onClick={() => {
           void (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.())?.catch(() => {});

@@ -17,7 +17,6 @@ function readLocation() {
   const url = new URL(window.location.href);
   const room = url.searchParams.get('room')?.trim().toUpperCase() ?? '';
   const host = ['/host', '/admin'].includes(url.pathname) || url.searchParams.get('mode') === 'remote' || url.searchParams.get('screen') === 'host';
-  const audience = url.pathname === '/play' || (!host && url.searchParams.get('screen') === 'audience');
   const fragment = new URLSearchParams(url.hash.slice(1)).get('key') ?? '';
   // The host key never appears in an HTTP URL or on the audience page.
   let token = '';
@@ -28,51 +27,51 @@ function readLocation() {
       window.history.replaceState(null, '', `/host?room=${room}`);
     } else token = getStored(credentialKey(room));
   }
-  return { host, audience, room, token };
+  return { host, room, token };
 }
 const location = readLocation();
 
 export default function App() {
-  if (location.host && roomFormat.test(location.room) && tokenFormat.test(location.token)) return <HostRoom {...location} />;
-  if (location.audience && roomFormat.test(location.room)) return <AudienceRoom room={location.room} />;
-  return <Lobby audience={location.audience} error={location.host && location.room ? 'رابط التحكم غير مكتمل. افتح الرابط الخاص بالمقدم.' : ''} />;
+  if (location.host) {
+    if (roomFormat.test(location.room) && tokenFormat.test(location.token)) return <HostRoom {...location} />;
+    return <SessionNotice error="افتح رابط التحكم الخاص من رمز QR على اللابتوب." />;
+  }
+  if (roomFormat.test(location.room)) {
+    return <AudienceRoom room={location.room} token={getStored(credentialKey(location.room))} />;
+  }
+  return <OpenStage />;
 }
 
-function Lobby({ audience, error: initialError }: { audience: boolean; error: string }) {
-  const [error, setError] = useState(initialError);
-  const [busy, setBusy] = useState(false);
-  const [code, setCode] = useState(location.room);
-  const [last] = useState(() => getStored('family-feud-last-room'));
-  return <main className="lobby show-space">
-    <div className="stage-rays" aria-hidden="true" />
-    <div className="lobby-card">
-      <span className="show-kicker">من مسرح مسجد ابن تيمية</span>
-      <ShowLogo />
-      <h1>تحدّي العائلة</h1>
-      <p>فريقان على المسرح. أربع جولات. مين رح ياخذ الفوز؟</p>
-      {!audience && <div className="lobby-actions">
-        <button className="show-primary" disabled={busy} onClick={async () => {
-          setBusy(true); setError('');
-          try {
-            const next = await createRoom();
-            store('family-feud-last-room', next.roomId);
-            window.location.assign(`/host?room=${next.roomId}#key=${next.token}`);
-          } catch (err) { setError((err as Error).message); setBusy(false); }
-        }}>{busy ? 'جاري تجهيز المسرح…' : 'إنشاء مباراة · للمقدم'}</button>
-        {roomFormat.test(last) && getStored(credentialKey(last)) && <a href={`/host?room=${last}`}>استئناف آخر مباراة</a>}
-      </div>}
-      <form className="lobby-join" onSubmit={e => {
-        e.preventDefault();
-        if (!roomFormat.test(code.trim().toUpperCase())) return setError('أدخل رمز غرفة العرض كما ظهر لدى المقدم.');
-        window.location.assign(`/play?room=${code.trim().toUpperCase()}`);
-      }}>
-        <input dir="ltr" aria-label="رمز غرفة العرض" placeholder="رمز غرفة العرض" value={code} maxLength={26} onChange={e => setCode(e.target.value)} />
-        <button>فتح شاشة الجمهور</button>
-      </form>
-      {error && <p role="alert" className="host-error">{error}</p>}
-      <small>إذا تساوت النقاط بعد الجولة الرابعة، تُعلَن المباراة تعادلًا.</small>
-    </div>
-  </main>;
+function OpenStage() {
+  const [attempt, setAttempt] = useState(0);
+  const [error, setError] = useState('');
+  const [ownedRoom, setOwnedRoom] = useState<{ room: string; token: string; showCode: boolean }>();
+
+  useEffect(() => {
+    const open = async () => {
+      const last = getStored('family-feud-last-room');
+      const key = roomFormat.test(last) ? getStored(credentialKey(last)) : '';
+      if (tokenFormat.test(key)) {
+        try {
+          const view = await getHostState(last, key);
+          if (view.state.phase !== 'GAME_OVER') return { room: last, token: key, showCode: false };
+        } catch (error) {
+          if (!(error instanceof RoomError) || error.status !== 403) throw error;
+        }
+      }
+      const created = await createRoom();
+      store(credentialKey(created.roomId), created.token);
+      store('family-feud-last-room', created.roomId);
+      return { room: created.roomId, token: created.token, showCode: true };
+    };
+    void open().then(next => {
+      window.history.replaceState(null, '', `/play?room=${next.room}`);
+      setOwnedRoom(next);
+    }).catch(err => setError(err.message));
+  }, [attempt]);
+
+  if (ownedRoom) return <AudienceRoom {...ownedRoom} />;
+  return <SessionNotice error={error} onRetry={() => { setError(''); setAttempt(n => n + 1); }} />;
 }
 
 function HostRoom({ room, token }: { room: string; token: string }) {
@@ -134,9 +133,11 @@ function HostRoom({ room, token }: { room: string; token: string }) {
   </>;
 }
 
-function Pairing({ room, token, onClose }: { room: string; token: string; onClose: () => void }) {
+function Pairing({ room, token, onClose, initialKind = 'audience' }: {
+  room: string; token: string; onClose: () => void; initialKind?: 'audience' | 'host';
+}) {
   const [origin, setOrigin] = useState(window.location.origin);
-  const [kind, setKind] = useState<'audience' | 'host'>('audience');
+  const [kind, setKind] = useState(initialKind);
   const [image, setImage] = useState<{ url: string; data: string }>();
   const [copied, setCopied] = useState(false);
   const audienceUrl = `${origin}/play?room=${room}`;
@@ -177,7 +178,9 @@ function Pairing({ room, token, onClose }: { room: string; token: string; onClos
   </div>;
 }
 
-function AudienceRoom({ room }: { room: string }) {
+function AudienceRoom({ room, token, showCode = false }: { room: string; token: string; showCode?: boolean }) {
+  const [pair, setPair] = useState(showCode);
+  const canPair = tokenFormat.test(token);
   const [state, setState] = useState<GameState>();
   const [offset, setOffset] = useState(0);
   const [connected, setConnected] = useState(false);
@@ -203,11 +206,15 @@ function AudienceRoom({ room }: { room: string }) {
     return () => { abort.abort(); events.close(); window.clearInterval(fallback); };
   }, [room]);
   if (!state) return <SessionNotice error={error} />;
-  return <AudienceScreen state={state} connected={connected} serverOffset={offset} />;
+  return <>
+    <AudienceScreen state={state} connected={connected} serverOffset={offset} onPair={canPair ? () => setPair(true) : undefined} />
+    {canPair && pair && <Pairing room={room} token={token} initialKind="host" onClose={() => setPair(false)} />}
+  </>;
 }
 
-function SessionNotice({ error }: { error: string }) {
+function SessionNotice({ error, onRetry }: { error: string; onRetry?: () => void }) {
   return <main className="lobby show-space"><div className="lobby-card"><ShowLogo />
-    <p role="status">{error || 'جاري الاتصال بالمسرح…'}</p><a href="/">العودة للرئيسية</a>
+    <p role="status">{error || 'جاري تجهيز شاشة الجمهور…'}</p>
+    {error && (onRetry ? <button onClick={onRetry}>حاول مرة ثانية</button> : <a href="/">العودة للرئيسية</a>)}
   </div></main>;
 }
