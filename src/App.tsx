@@ -1,515 +1,213 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { GameState, GameSyncMessage } from './types/game';
-import { createInitialGameState } from './utils/gameDefaults';
-import { normalizeLoadedState } from './utils/gameEngine';
-import { QUESTION_BANK } from './data/questionBank';
-import {
-  broadcastGameState,
-  broadcastSound,
-  checkSyncServerConnection,
-  fetchRemoteState,
-  loadAudienceStateFromStorage,
-  loadGameStateFromStorage,
-  subscribeToSync,
-  toAudienceState,
-} from './utils/sync';
-import { playSound, setAudioControls } from './utils/audio';
-import { initP2PSync } from './utils/p2pSync';
-import { nextStateVersion } from './utils/stateVersion';
+import { useEffect, useRef, useState } from 'react';
+import QRCode from 'qrcode';
 import { AudienceScreen } from './components/AudienceScreen';
 import { HostController } from './components/HostController';
-import { DeviceConnectModal } from './components/DeviceConnectModal';
+import { ShowLogo } from './components/ShowLogo';
+import { createRoom, getAudienceState, getHostState, RoomError, sendCommand, type PrivateView } from './utils/roomClient';
+import type { Command } from './utils/roomCommands';
+import type { GameState } from './types/game';
+import './show.css';
+
+const roomFormat = /^[A-F0-9]{24}$/;
+const tokenFormat = /^[a-f0-9]{64}$/;
+const credentialKey = (room: string) => `family-feud-host:${room}`;
+const getStored = (key: string) => { try { return localStorage.getItem(key) ?? ''; } catch { return ''; } };
+const store = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* Links remain usable. */ } };
+function readLocation() {
+  const url = new URL(window.location.href);
+  const room = url.searchParams.get('room')?.trim().toUpperCase() ?? '';
+  const host = ['/host', '/admin'].includes(url.pathname) || url.searchParams.get('mode') === 'remote' || url.searchParams.get('screen') === 'host';
+  const audience = url.pathname === '/play' || (!host && url.searchParams.get('screen') === 'audience');
+  const fragment = new URLSearchParams(url.hash.slice(1)).get('key') ?? '';
+  // The host key never appears in an HTTP URL or on the audience page.
+  let token = '';
+  if (host && roomFormat.test(room)) {
+    if (tokenFormat.test(fragment)) {
+      token = fragment;
+      store(credentialKey(room), token);
+      window.history.replaceState(null, '', `/host?room=${room}`);
+    } else token = getStored(credentialKey(room));
+  }
+  return { host, audience, room, token };
+}
+const location = readLocation();
 
 export default function App() {
-  // Guaranteed unique room code per game (e.g. FEUD-4821 or from URL ?room=XXXX)
-  const [roomId, setRoomId] = useState<string>(() => {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      const fromUrl = params.get('room');
-      if (fromUrl && fromUrl.trim()) {
-        const clean = fromUrl.trim().toUpperCase();
-        try { sessionStorage.setItem('feud_active_room', clean); } catch {}
-        return clean;
-      }
-      try {
-        const saved = sessionStorage.getItem('feud_active_room');
-        if (saved) return saved;
-      } catch {}
-    }
-    const rand = Math.floor(1000 + Math.random() * 9000);
-    const newRoom = `FEUD-${rand}`;
-    if (typeof window !== 'undefined') {
-      try { sessionStorage.setItem('feud_active_room', newRoom); } catch {}
-    }
-    return newRoom;
-  });
+  if (location.host && roomFormat.test(location.room) && tokenFormat.test(location.token)) return <HostRoom {...location} />;
+  if (location.audience && roomFormat.test(location.room)) return <AudienceRoom room={location.room} />;
+  return <Lobby audience={location.audience} error={location.host && location.room ? 'رابط التحكم غير مكتمل. افتح الرابط الخاص بالمقدم.' : ''} />;
+}
 
-  const [p2pConnected, setP2pConnected] = useState<boolean>(false);
-  const [p2pPeerCount, setP2pPeerCount] = useState<number>(0);
-  const [serverConnected, setServerConnected] = useState(false);
-
-  const [screenMode, setScreenMode] = useState<'audience' | 'host'>(() => {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      const mode = params.get('mode') || params.get('screen');
-      const hash = window.location.hash.toLowerCase();
-      if (window.location.pathname.startsWith('/host') || mode === 'remote' || mode === 'host' || mode === 'controller' || hash === '#remote') return 'host';
-      if (mode === 'audience' || mode === 'tv' || mode === 'display') return 'audience';
-    }
-    return 'audience';
-  });
-  const [returnToHostAvailable, setReturnToHostAvailable] = useState(false);
-  const [strikeSignal, setStrikeSignal] = useState(0);
-
-  // Listen to hash changes (e.g. user toggles #remote in URL)
-  useEffect(() => {
-    const handleHashChange = () => {
-      const hash = window.location.hash.toLowerCase();
-      if (hash === '#remote') {
-        setScreenMode('host');
-      }
-    };
-    window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
-  }, []);
-
-  // Pure TV fullscreen mode (hides the top navigation switcher)
-  const [isTvCleanMode, setIsTvCleanMode] = useState<boolean>(() => {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      return window.location.pathname === '/play' || params.get('screen') === 'audience' || params.get('clean') === '1';
-    }
-    return false;
-  });
-
-  const [showConnectModal, setShowConnectModal] = useState<boolean>(false);
-
-  const [gameState, setGameState] = useState<GameState>(() => {
-    let saved: GameState | null = null;
-    if (screenMode === 'host') {
-      try {
-        const privateState = localStorage.getItem(`family_feud_host_private_state:${encodeURIComponent(roomId)}`);
-        const legacyPrivate = localStorage.getItem('family_feud_host_private_state');
-        const parsedLegacy = legacyPrivate ? JSON.parse(legacyPrivate) as GameState : null;
-        saved = privateState ? JSON.parse(privateState) as GameState : parsedLegacy?.roomId === roomId ? parsedLegacy : loadGameStateFromStorage(roomId);
-      } catch {
-        saved = loadGameStateFromStorage(roomId);
-      }
-    }
-    if (saved) {
-      const normalized = normalizeLoadedState({ ...saved, roomId });
-      return normalized;
-    }
-    if (screenMode === 'audience') {
-      try {
-        const publicSaved = loadAudienceStateFromStorage(roomId);
-        if (publicSaved) return normalizeLoadedState({ ...publicSaved, roomId });
-      } catch { /* Continue with a fresh public view. */ }
-    }
-    const fresh = { ...createInitialGameState(), roomId };
-    return screenMode === 'audience' ? toAudienceState(fresh) : fresh;
-  });
-
-  const historyRef = useRef<GameState[]>([]);
-
-  useEffect(() => { setAudioControls(gameState.volume ?? 0.8, Boolean(gameState.muted)); }, [gameState.volume, gameState.muted]);
-
-  const hydrateQuestion = useCallback((incoming: GameState): GameState => {
-    const localQuestion = gameStateRef.current?.currentQuestion;
-    let customQuestions: typeof QUESTION_BANK = [];
-    try {
-      const raw = localStorage.getItem('family_feud_custom_questions');
-      if (raw) customQuestions = JSON.parse(raw);
-    } catch {}
-    const source = [localQuestion, ...customQuestions, ...QUESTION_BANK].find((q) => q?.id === incoming.currentQuestion?.id);
-    if (!source || screenMode !== 'host') return normalizeLoadedState(incoming);
-    return normalizeLoadedState({ ...incoming, currentQuestion: source });
-  }, [screenMode]);
-
-  useEffect(() => {
-    if (screenMode === 'host') setGameState((current) => hydrateQuestion(current));
-  }, [screenMode, hydrateQuestion]);
-
-  const gameStateRef = useRef(gameState);
-  useEffect(() => {
-    gameStateRef.current = gameState;
-  }, [gameState]);
-
-  // Sync initial remote state from server (for Audience and newly connected Host)
-  useEffect(() => {
-    fetchRemoteState(roomId).then((remote) => {
-      if (screenMode === 'audience') {
-        if (remote && (!remote.roomId || remote.roomId === roomId)) {
-          setGameState(hydrateQuestion(remote));
-        }
-      } else {
-        // Host is authoritative: bump version ahead of remote and immediately broadcast so TV & Phone match 100%
-        setGameState((current) => {
-          const synced: GameState = {
-            ...current,
-            roomId,
-            actionId: Math.max(current.actionId ?? 0, (remote?.actionId ?? 0) + 1),
-            lastUpdated: Date.now(),
-          };
-          broadcastGameState(synced, roomId);
-          return synced;
-        });
-      }
-    });
-  }, [roomId, hydrateQuestion, screenMode]);
-
-  // Subscribe to BroadcastChannel & Server-Sent Events (SSE) + HTTP polling fallback
-  useEffect(() => {
-    if (screenMode !== 'audience') return;
-    const unsubscribe = subscribeToSync((msg: GameSyncMessage) => {
-      if (msg.type === 'STATE_UPDATE' && msg.state) {
-        setGameState(hydrateQuestion(msg.state));
-      } else if (msg.type === 'TRIGGER_SOUND') {
-        playSound(msg.sound);
-        if (msg.sound === 'strike') {
-          setStrikeSignal((s) => s + 1);
-        }
-      }
-    }, roomId, 'audience', setServerConnected);
-
-    // HTTP polling fallback every 2s when P2P is not active (handles proxy-buffered SSE)
-    const pollInterval = window.setInterval(() => {
-      fetchRemoteState(roomId).then((remote) => {
-        if (remote && (!remote.roomId || remote.roomId === roomId)) {
-          setGameState((prev) =>
-            (remote.actionId ?? 0) !== (prev.actionId ?? 0) || (remote.lastUpdated ?? 0) > (prev.lastUpdated ?? 0)
-              ? hydrateQuestion(remote)
-              : prev
-          );
-        }
-      });
-    }, 2000);
-
-    return () => {
-      unsubscribe();
-      window.clearInterval(pollInterval);
-    };
-  }, [roomId, hydrateQuestion, screenMode]);
-
-  useEffect(() => {
-    let alive = true;
-    const probe = () => { void checkSyncServerConnection(roomId).then((connected) => { if (alive) setServerConnected(connected); }); };
-    probe();
-    const interval = window.setInterval(probe, 5000);
-    return () => { alive = false; window.clearInterval(interval); };
-  }, [roomId]);
-
-  // WebRTC P2P Serverless Direct Sync (Zero-server sync for GitHub Pages, Vercel, and Phone ➔ TV)
-  // If the QR Connect modal is open on this device, act as 'display' so scanning the QR from a phone connects immediately
-  const p2pRole: 'display' | 'remote' = showConnectModal || screenMode === 'audience' ? 'display' : 'remote';
-
-  useEffect(() => {
-    const cleanup = initP2PSync(roomId, p2pRole, {
-      getCurrentState: () => gameStateRef.current,
-      onConnectionStatusChange: (connected, count) => {
-        setP2pConnected(connected);
-        setP2pPeerCount(count);
-      },
-      onStateUpdate: (remoteState) => {
-        if (remoteState.roomId && remoteState.roomId !== roomId) return;
-        if (p2pRole === 'display') {
-          setGameState(hydrateQuestion(remoteState));
-          if (showConnectModal) {
-            setScreenMode('audience');
-          }
-        }
-      },
-      onSoundTrigger: (sound) => {
-        playSound(sound);
-        if (sound === 'strike') {
-          setStrikeSignal((s) => s + 1);
-        }
-      },
-    });
-
-    return () => {
-      cleanup();
-    };
-  }, [roomId, p2pRole, hydrateQuestion, showConnectModal]);
-
-  // State updater that auto-broadcasts locally and to remote devices
-  const updateState = useCallback(
-    (updater: (prev: GameState) => GameState) => {
-      setGameState((prev) => {
-        const next = updater(prev);
-        if (next === prev) return prev;
-        if (screenMode === 'host') historyRef.current = [...historyRef.current.slice(-29), prev];
-        const withMeta = { ...next, roomId, ...nextStateVersion(prev) };
-        broadcastGameState(withMeta, roomId);
-        return withMeta;
-      });
-    },
-    [roomId, screenMode]
-  );
-
-  const undoLastAction = useCallback(() => {
-    const previous = historyRef.current.pop();
-    if (!previous) return;
-    const restored = { ...previous, roomId, ...nextStateVersion(gameStateRef.current) };
-    setGameState(restored);
-    broadcastGameState(restored, roomId);
-  }, [roomId]);
-
-  useEffect(() => {
-    if (screenMode !== 'host') return;
-    try { localStorage.setItem(`family_feud_host_private_state:${encodeURIComponent(roomId)}`, JSON.stringify(gameState)); } catch { /* storage may be unavailable */ }
-  }, [gameState, screenMode, roomId]);
-
-  // Sound trigger that plays locally and broadcasts to all devices
-  const triggerSound = useCallback(
-    (sound: 'chime' | 'strike' | 'bell' | 'tick' | 'duplicate' | 'applause' | 'fanfare' | 'steal') => {
-      playSound(sound);
-      if (sound === 'strike') {
-        setStrikeSignal((s) => s + 1);
-      }
-      broadcastSound(sound, roomId);
-    },
-    [roomId]
-  );
-
-  // Reset full game immediately without window.confirm (which blocks in iframes)
-  const resetGame = () => {
-    const fresh = { ...createInitialGameState(), roomId, ...nextStateVersion(gameStateRef.current) };
-    setGameState(fresh);
-    historyRef.current = [];
-    broadcastGameState(fresh, roomId);
-  };
-
-  const dismissGameOver = () => {
-    updateState((prev) => ({
-      ...prev,
-      phase: 'ROUND_OVER',
-    }));
-  };
-
-  const [isFullscreen, setIsFullscreen] = useState(false);
-
-  // Sync fullscreen state with browser events
-  useEffect(() => {
-    const handleFsChange = () => {
-      const active = Boolean(document.fullscreenElement);
-      setIsFullscreen(active);
-      if (!active && !isTvCleanMode) {
-        // Exited fullscreen
-      }
-    };
-    document.addEventListener('fullscreenchange', handleFsChange);
-    document.addEventListener('webkitfullscreenchange', handleFsChange);
-    return () => {
-      document.removeEventListener('fullscreenchange', handleFsChange);
-      document.removeEventListener('webkitfullscreenchange', handleFsChange);
-    };
-  }, [isTvCleanMode]);
-
-  // Enter or exit true browser fullscreen (hides Google search bar & tabs)
-  const handleToggleFullscreen = async (forceEnter?: boolean) => {
-    try {
-      const elem = document.documentElement as HTMLElement & {
-        webkitRequestFullscreen?: () => Promise<void>;
-        mozRequestFullScreen?: () => Promise<void>;
-        msRequestFullscreen?: () => Promise<void>;
-      };
-      const doc = document as Document & {
-        webkitExitFullscreen?: () => Promise<void>;
-        mozCancelFullScreen?: () => Promise<void>;
-        msExitFullscreen?: () => Promise<void>;
-      };
-
-      const shouldEnter = forceEnter !== undefined ? forceEnter : !document.fullscreenElement;
-
-      if (shouldEnter) {
-        setIsTvCleanMode(true);
-        if (elem.requestFullscreen) {
-          await elem.requestFullscreen();
-        } else if (elem.webkitRequestFullscreen) {
-          await elem.webkitRequestFullscreen();
-        } else if (elem.mozRequestFullScreen) {
-          await elem.mozRequestFullScreen();
-        } else if (elem.msRequestFullscreen) {
-          await elem.msRequestFullscreen();
-        }
-      } else {
-        setIsTvCleanMode(false);
-        if (document.fullscreenElement) {
-          if (doc.exitFullscreen) {
-            await doc.exitFullscreen();
-          } else if (doc.webkitExitFullscreen) {
-            await doc.webkitExitFullscreen();
-          } else if (doc.mozCancelFullScreen) {
-            await doc.mozCancelFullScreen();
-          } else if (doc.msExitFullscreen) {
-            await doc.msExitFullscreen();
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('Browser fullscreen error:', err);
-      // Fallback: still clean UI
-      setIsTvCleanMode(true);
-    }
-  };
-
-  const handleRoomChange = (newRoom: string) => {
-    const cleanRoom = newRoom.toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 32);
-    if (!cleanRoom || cleanRoom === roomId) return;
-    let scoped: GameState | null = null;
-    try {
-      const saved = localStorage.getItem(`family_feud_host_private_state:${encodeURIComponent(cleanRoom)}`);
-      scoped = saved ? normalizeLoadedState(JSON.parse(saved) as GameState) : null;
-      sessionStorage.setItem('feud_active_room', cleanRoom);
-    } catch { /* Start a fresh room when stored state cannot be read. */ }
-    const next = scoped ?? { ...createInitialGameState(), roomId: cleanRoom };
-    setGameState(screenMode === 'audience' ? toAudienceState(next) : next);
-    historyRef.current = [];
-    setRoomId(cleanRoom);
-    const url = new URL(window.location.href);
-    url.searchParams.set('room', cleanRoom);
-    window.history.replaceState({}, '', url.toString());
-  };
-
-  const returnToHost = () => {
-    try {
-      const saved = localStorage.getItem(`family_feud_host_private_state:${encodeURIComponent(roomId)}`);
-      if (saved) setGameState(normalizeLoadedState(JSON.parse(saved) as GameState));
-    } catch { /* Keep current state if storage is unavailable. */ }
-    setScreenMode('host');
-  };
-
-  return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-amber-500 selection:text-slate-950">
-      {/* Top Floating View Switcher Bar */}
-      {!isTvCleanMode && !['/play', '/host'].includes(window.location.pathname) ? (
-        <nav className="sticky top-0 z-40 flex flex-wrap items-center justify-between border-b border-amber-500/20 bg-slate-950/95 px-3 md:px-5 py-2 backdrop-blur-md gap-2">
-          <div className="flex items-center gap-2 sm:gap-3">
-            <span className="font-display font-extrabold text-amber-400 text-sm hidden sm:inline">
-              تحدّي العائلة
-            </span>
-
-            {/* Mode Switcher Tabs */}
-            <div className="flex items-center gap-1 rounded-xl bg-slate-900 p-1 border border-slate-800">
-              <button
-                onClick={() => setScreenMode('audience')}
-                className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-all ${
-                  screenMode === 'audience'
-                    ? 'bg-amber-500 text-slate-950 shadow-sm'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <span>📺</span>
-                <span>شاشة العرض (التلفزيون)</span>
-              </button>
-              <button
-                onClick={() => setScreenMode('host')}
-                className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-all ${
-                  screenMode === 'host'
-                    ? 'bg-amber-500 text-slate-950 shadow-sm'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <span>🎮</span>
-                <span>شاشة التحكم (المقدم)</span>
-              </button>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {/* Dual Device Connect Button (QR Code) */}
-            <button
-              onClick={() => setShowConnectModal(true)}
-              className="flex items-center gap-1.5 rounded-xl border border-amber-400 bg-gradient-to-r from-amber-500/20 to-yellow-500/20 px-3 py-1.5 text-xs font-bold text-amber-300 hover:brightness-125 shadow-[0_0_12px_rgba(245,158,11,0.2)] active:scale-95 transition-all"
-            >
-              <span>📱</span>
-              <span>ربط الجوال بالباركود (QR)</span>
-            </button>
-
-            {/* Clean TV Full View Toggle */}
-            {screenMode === 'audience' && (
-              <button
-                onClick={() => handleToggleFullscreen(true)}
-                title="إخفاء شريط العنوان وسيرش جوجل وتشغيل وضع ملء الشاشة الكامل"
-                className="flex items-center gap-1.5 rounded-xl border border-amber-400/80 bg-gradient-to-r from-amber-500/30 to-amber-600/30 px-3 py-1.5 text-xs font-bold text-amber-200 hover:brightness-125 hover:text-white shadow-[0_0_12px_rgba(245,158,11,0.25)] transition-all"
-              >
-                <span>⛶</span>
-                <span>وضع التلفزيون الكامل (ملء الشاشة)</span>
-              </button>
-            )}
-
-            {/* Reset Game Button */}
-            <button
-              onClick={resetGame}
-              title="تصفير اللعبة وبدء مباراة جديدة"
-              className="rounded-xl border border-red-500/30 bg-red-950/40 px-2.5 py-1.5 text-xs font-medium text-red-300 hover:bg-red-900/60 transition-colors"
-            >
-              تصفير ↺
-            </button>
-          </div>
-        </nav>
-      ) : isTvCleanMode && !['/play', '/host'].includes(window.location.pathname) ? (
-        /* Discreet floating buttons in TV mode */
-        <div className="fixed top-2 left-2 z-50 flex items-center gap-2 opacity-25 hover:opacity-100 transition-opacity">
-          <button
-            onClick={() => handleToggleFullscreen(false)}
-            className="flex items-center gap-1 rounded-lg bg-black/60 hover:bg-black/90 px-2.5 py-1 text-[11px] font-bold text-amber-300 hover:text-white backdrop-blur-md transition-all shadow"
-          >
-            <span>⛶</span>
-            <span>خروج من ملء الشاشة</span>
-          </button>
-          <button
-            onClick={() => setIsTvCleanMode(false)}
-            className="rounded-lg bg-black/60 hover:bg-black/90 px-2.5 py-1 text-[11px] text-slate-300 hover:text-white backdrop-blur-md transition-all shadow"
-          >
-            ⚙️ إظهار الشريط
-          </button>
-        </div>
-      ) : null}
-
-      {/* Screen Views */}
-      {screenMode === 'audience' ? (
-        <AudienceScreen
-          state={toAudienceState(gameState)}
-          strikeSignal={strikeSignal}
-          onOpenControllerTab={returnToHost}
-          showReturnToHost={returnToHostAvailable}
-          onRestartGame={resetGame}
-          onDismissGameOver={dismissGameOver}
-          onToggleFullscreen={() => handleToggleFullscreen()}
-          isFullscreen={isFullscreen}
-          p2pConnected={p2pConnected}
-          serverConnected={serverConnected}
-          p2pPeerCount={p2pPeerCount}
-          roomId={roomId}
-        />
-      ) : (
-        <HostController
-          state={gameState}
-          updateState={updateState}
-          triggerSound={triggerSound}
-          onOpenConnectModal={() => setShowConnectModal(true)}
-          onSwitchToAudience={() => { setReturnToHostAvailable(true); setScreenMode('audience'); }}
-          p2pConnected={p2pConnected}
-          serverConnected={serverConnected}
-          roomId={roomId}
-          onUndo={undoLastAction}
-          onRestartGame={resetGame}
-          canUndo={historyRef.current.length > 0}
-        />
-      )}
-
-      {/* Two Devices Connect Modal */}
-      <DeviceConnectModal
-        isOpen={showConnectModal}
-        onClose={() => setShowConnectModal(false)}
-        roomId={roomId}
-        onRoomChange={handleRoomChange}
-        onOpenAudience={() => { setShowConnectModal(false); setReturnToHostAvailable(true); setScreenMode('audience'); }}
-        p2pConnected={p2pConnected}
-        serverConnected={serverConnected}
-      />
+function Lobby({ audience, error: initialError }: { audience: boolean; error: string }) {
+  const [error, setError] = useState(initialError);
+  const [busy, setBusy] = useState(false);
+  const [code, setCode] = useState(location.room);
+  const [last] = useState(() => getStored('family-feud-last-room'));
+  return <main className="lobby show-space">
+    <div className="stage-rays" aria-hidden="true" />
+    <div className="lobby-card">
+      <span className="show-kicker">من مسرح مسجد ابن تيمية</span>
+      <ShowLogo />
+      <h1>تحدّي العائلة</h1>
+      <p>فريقان على المسرح. أربع جولات. مين رح ياخذ الفوز؟</p>
+      {!audience && <div className="lobby-actions">
+        <button className="show-primary" disabled={busy} onClick={async () => {
+          setBusy(true); setError('');
+          try {
+            const next = await createRoom();
+            store('family-feud-last-room', next.roomId);
+            window.location.assign(`/host?room=${next.roomId}#key=${next.token}`);
+          } catch (err) { setError((err as Error).message); setBusy(false); }
+        }}>{busy ? 'جاري تجهيز المسرح…' : 'إنشاء مباراة · للمقدم'}</button>
+        {roomFormat.test(last) && getStored(credentialKey(last)) && <a href={`/host?room=${last}`}>استئناف آخر مباراة</a>}
+      </div>}
+      <form className="lobby-join" onSubmit={e => {
+        e.preventDefault();
+        if (!roomFormat.test(code.trim().toUpperCase())) return setError('أدخل رمز غرفة العرض كما ظهر لدى المقدم.');
+        window.location.assign(`/play?room=${code.trim().toUpperCase()}`);
+      }}>
+        <input dir="ltr" aria-label="رمز غرفة العرض" placeholder="رمز غرفة العرض" value={code} maxLength={26} onChange={e => setCode(e.target.value)} />
+        <button>فتح شاشة الجمهور</button>
+      </form>
+      {error && <p role="alert" className="host-error">{error}</p>}
+      <small>إذا تساوت النقاط بعد الجولة الرابعة، تُعلَن المباراة تعادلًا.</small>
     </div>
-  );
+  </main>;
+}
+
+function HostRoom({ room, token }: { room: string; token: string }) {
+  const [view, setView] = useState<PrivateView>();
+  const latest = useRef<PrivateView | undefined>(undefined);
+  const lock = useRef(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState('');
+  const [offset, setOffset] = useState(0);
+  const [pair, setPair] = useState(false);
+
+  const receive = (next: PrivateView) => {
+    if (latest.current && next.state.actionId < latest.current.state.actionId) return;
+    latest.current = { ...next, questions: next.questions ?? latest.current?.questions };
+    setView(latest.current);
+    setOffset(next.serverNow - Date.now());
+  };
+
+  useEffect(() => {
+    const abort = new AbortController();
+    const refresh = () => {
+      if (lock.current) return;
+      void getHostState(room, token, abort.signal).then(next => {
+        if (abort.signal.aborted || lock.current) return;
+        if (!latest.current || next.state.actionId !== latest.current.state.actionId) receive(next);
+        setError(old => old.startsWith('انقطع الاتصال') ? '' : old);
+        store('family-feud-last-room', room);
+      }).catch(err => { if (!abort.signal.aborted && !lock.current) setError(err.message); });
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 2500);
+    window.addEventListener('focus', refresh);
+    return () => { abort.abort(); window.clearInterval(interval); window.removeEventListener('focus', refresh); };
+  }, [room, token]);
+
+  async function send(command: Command) {
+    if (lock.current || !latest.current) return false;
+    lock.current = true;
+    setPending(true); setError('');
+    try {
+      receive(await sendCommand(room, token, latest.current.state.actionId, command));
+      return true;
+    } catch (err) {
+      if (err instanceof RoomError && err.view) receive(err.view);
+      else if (err instanceof RoomError && err.status === 0) {
+        // The command might have committed before the connection dropped. Reload before another write.
+        await getHostState(room, token, AbortSignal.timeout(4000)).then(receive).catch(() => {});
+      }
+      setError((err as Error).message);
+      return false;
+    } finally { lock.current = false; setPending(false); }
+  }
+
+  if (!view) return <SessionNotice error={error} />;
+  return <>
+    <HostController state={view.state} questions={view.questions ?? []} canUndo={view.canUndo}
+      pending={pending} error={error} onConnect={() => setPair(true)} send={send} serverOffset={offset} />
+    {pair && <Pairing room={room} token={token} onClose={() => setPair(false)} />}
+  </>;
+}
+
+function Pairing({ room, token, onClose }: { room: string; token: string; onClose: () => void }) {
+  const [origin, setOrigin] = useState(window.location.origin);
+  const [kind, setKind] = useState<'audience' | 'host'>('audience');
+  const [image, setImage] = useState<{ url: string; data: string }>();
+  const [copied, setCopied] = useState(false);
+  const audienceUrl = `${origin}/play?room=${room}`;
+  const hostUrl = `${origin}/host?room=${room}#key=${token}`;
+  const url = kind === 'host' ? hostUrl : audienceUrl;
+
+  useEffect(() => {
+    if (!['localhost', '127.0.0.1', '[::1]', '0.0.0.0'].includes(window.location.hostname)) return;
+    const abort = new AbortController();
+    void fetch('/api/connect-info', { signal: abort.signal }).then(res => res.json()).then(info => {
+      if (info.localUrl && !abort.signal.aborted) setOrigin(info.localUrl);
+    }).catch(() => {});
+    return () => abort.abort();
+  }, []);
+  useEffect(() => {
+    let active = true;
+    void QRCode.toDataURL(url, { width: 260, margin: 2 }).then(data => { if (active) setImage({ url, data }); }).catch(() => {});
+    return () => { active = false; };
+  }, [url]);
+  return <div className="remote-backdrop" onClick={onClose}>
+    <section className="remote-sheet pairing" role="dialog" aria-modal="true" aria-label="ربط الأجهزة" onClick={e => e.stopPropagation()}>
+      <header><h2>ربط الأجهزة</h2><button autoFocus aria-label="إغلاق" onClick={onClose}>✕</button></header>
+      <div className="remote-tools">
+        <button className={kind === 'audience' ? 'remote-gold' : ''} onClick={() => { setKind('audience'); setCopied(false); }}>شاشة الجمهور</button>
+        <button className={kind === 'host' ? 'remote-gold' : ''} onClick={() => { setKind('host'); setCopied(false); }}>هاتف المقدم · خاص</button>
+      </div>
+      <p>{kind === 'host' ? 'هذا الرمز يعطي صلاحية التحكم كاملة. امسحه بهاتف المقدم بعيدًا عن الجمهور.' : 'افتح الرابط على جهاز البروجكتر. على الشبكة المحلية وصّل الجهازين بنفس شبكة Wi‑Fi.'}</p>
+      {image?.url === url && <img src={image.data} width="240" height="240" alt={kind === 'host' ? 'رمز QR خاص بالمقدم' : 'رمز QR لشاشة الجمهور'} />}
+      <input aria-label="رابط الجهاز" dir="ltr" value={url} readOnly onFocus={e => e.target.select()} />
+      <div className="remote-tools">
+        <button onClick={async () => {
+          try { await navigator.clipboard.writeText(url); setCopied(true); }
+          catch { setCopied(false); }
+        }}>{copied ? 'تم النسخ' : 'نسخ الرابط'}</button>
+        <a href={kind === 'audience' ? `/play?room=${room}` : url} target="_blank" rel="noreferrer">فتح الرابط</a>
+      </div>
+    </section>
+  </div>;
+}
+
+function AudienceRoom({ room }: { room: string }) {
+  const [state, setState] = useState<GameState>();
+  const [offset, setOffset] = useState(0);
+  const [connected, setConnected] = useState(false);
+  const [error, setError] = useState('');
+  const version = useRef(-1);
+
+  useEffect(() => {
+    const abort = new AbortController();
+    const receive = (data: { state: GameState; serverNow: number }) => {
+      if (abort.signal.aborted || data.state.actionId <= version.current) return;
+      version.current = data.state.actionId;
+      setState(data.state); setOffset(data.serverNow - Date.now()); setError('');
+    };
+    const events = new EventSource(`/api/sync/events?room=${room}`);
+    events.onopen = () => setConnected(true);
+    events.onmessage = event => receive(JSON.parse(event.data));
+    events.onerror = () => setConnected(false);
+    const refresh = () => void getAudienceState(room, abort.signal).then(receive).catch(err => {
+      if (!abort.signal.aborted) setError(err.message);
+    });
+    refresh();
+    const fallback = window.setInterval(() => { if (events.readyState !== EventSource.OPEN) refresh(); }, 3000);
+    return () => { abort.abort(); events.close(); window.clearInterval(fallback); };
+  }, [room]);
+  if (!state) return <SessionNotice error={error} />;
+  return <AudienceScreen state={state} connected={connected} serverOffset={offset} />;
+}
+
+function SessionNotice({ error }: { error: string }) {
+  return <main className="lobby show-space"><div className="lobby-card"><ShowLogo />
+    <p role="status">{error || 'جاري الاتصال بالمسرح…'}</p><a href="/">العودة للرئيسية</a>
+  </div></main>;
 }
