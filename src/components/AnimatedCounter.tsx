@@ -19,6 +19,7 @@ export function AnimatedCounter({
 
   useEffect(() => {
     if (value === displayValue) return;
+    if (duration <= 0) { setDisplayValue(value); return; }
 
     startValueRef.current = displayValue;
     targetValueRef.current = value;
@@ -51,5 +52,5 @@ export function AnimatedCounter({
     };
   }, [value, duration]);
 
-  return <span className={`tabular-nums will-change-transform ${className}`}>{displayValue}</span>;
+  return <span className={`tabular-nums will-change-transform ${className}`}>{duration <= 0 ? value : displayValue}</span>;
 }

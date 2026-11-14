@@ -333,3 +333,47 @@ export function playSound(sound: 'chime' | 'strike' | 'bell' | 'tick' | 'duplica
       break;
   }
 }
+
+export async function unlockAudio() {
+  try {
+    const ctx = getAudioContext();
+    if (ctx.state !== 'running') await ctx.resume();
+    return ctx.state === 'running';
+  } catch { return false; }
+}
+
+export function playShowCue(cue: import('./roomCommands').ShowCue, volume: number) {
+  setAudioControls(volume, false);
+  if (volume <= 0) return;
+  if (cue === 'reveal') return playChime();
+  if (cue === 'strike' || cue === 'stealLost') return playStrike();
+  if (cue === 'third') {
+    playStrike();
+    window.setTimeout(() => { if (!masterMuted) playStealAlert(); }, 250);
+    return;
+  }
+  if (cue === 'steal' || cue === 'stealWon') return playStealAlert();
+  if (cue === 'winner') return playVictoryImpact();
+  return playBell();
+}
+
+// A brief crowd-like burst made from filtered noise, without a melody or samples.
+function playVictoryImpact() {
+  const ctx = getAudioContext();
+  const at = ctx.currentTime;
+  const buffer = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.65), ctx.sampleRate);
+  const samples = buffer.getChannelData(0);
+  for (let i = 0; i < samples.length; i++) samples[i] = Math.random() * 2 - 1;
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  const band = ctx.createBiquadFilter();
+  band.type = 'bandpass';
+  band.frequency.setValueAtTime(460, at);
+  band.frequency.exponentialRampToValueAtTime(2700, at + .3);
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(.0001, at);
+  gain.gain.exponentialRampToValueAtTime(.62, at + .11);
+  gain.gain.exponentialRampToValueAtTime(.0001, at + .64);
+  source.connect(band); band.connect(gain); gain.connect(getMasterBus(ctx));
+  source.start(at);
+}

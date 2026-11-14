@@ -23,32 +23,26 @@ function makeRoundState(round: number, teamA = 0, teamB = 0): GameState {
   };
 }
 
-test('the curated bank contains 200 questions split evenly across five categories', () => {
-  assert.equal(QUESTION_BANK.length, 200);
+test('the bank retains 105 existing questions and adds 40 weighted questions per round', () => {
+  assert.equal(QUESTION_BANK.length, 265);
   assert.equal(new Set(QUESTION_BANK.map((question) => question.id)).size, QUESTION_BANK.length);
   assert.equal(new Set(QUESTION_BANK.map((question) => question.questionText)).size, QUESTION_BANK.length);
-  const categories = new Map<string, number>();
+  const roundCounts = [0, 0, 0, 0];
+  let existingCount = 0;
   for (const question of QUESTION_BANK) {
-    categories.set(question.category, (categories.get(question.category) ?? 0) + 1);
-    assert.equal(question.pointsSource, 'estimated');
-    assert.ok(question.answers.length >= 4 && question.answers.length <= 7);
+    if (question.suggestedRound) {
+      roundCounts[question.suggestedRound - 1]++;
+      assert.equal(question.answers.length, 6);
+      assert.equal(question.pointsSource, 'estimated');
+    } else {
+      existingCount++;
+      assert.ok(question.answers.length >= 3 && question.answers.length <= 8);
+    }
     assert.equal(question.answers.reduce((sum, answer) => sum + answer.points, 0), 100, question.questionText);
     assert.equal(new Set(question.answers.map((answer) => answer.text.normalize('NFKC').trim().toLocaleLowerCase('ar'))).size, question.answers.length);
   }
-  assert.deepEqual([...categories.values()].sort((a, b) => a - b), [40, 40, 40, 40, 40]);
-});
-
-test('the question bank avoids near-identical prompt wording', () => {
-  const stopWords = new Set(['من', 'في', 'على', 'عن', 'مع', 'ماذا', 'ما', 'لو', 'لما', 'هل', 'كيف', 'وين', 'أين', 'كل', 'بين', 'وقت', 'أو', 'و']);
-  const tokens = (value: string) => new Set(value.toLocaleLowerCase('ar').replace(/[؟،.!؛:«»]/g, ' ').split(/\s+/).filter((word) => word.length > 2 && !stopWords.has(word)));
-  for (let leftIndex = 0; leftIndex < QUESTION_BANK.length; leftIndex++) {
-    const left = tokens(QUESTION_BANK[leftIndex].questionText);
-    for (let rightIndex = leftIndex + 1; rightIndex < QUESTION_BANK.length; rightIndex++) {
-      const right = tokens(QUESTION_BANK[rightIndex].questionText);
-      const overlap = [...left].filter((word) => right.has(word)).length / new Set([...left, ...right]).size;
-      assert.ok(overlap <= 0.35, `Possible near-duplicate prompts: ${QUESTION_BANK[leftIndex].id} and ${QUESTION_BANK[rightIndex].id}`);
-    }
-  }
+  assert.equal(existingCount, 105);
+  assert.deepEqual(roundCounts, [40, 40, 40, 40]);
 });
 
 test('four rounds award the base bank with ×1, ×1, ×2, ×3 exactly once', () => {

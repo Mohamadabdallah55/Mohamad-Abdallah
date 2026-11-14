@@ -1,229 +1,132 @@
 import express, { Request, Response } from 'express';
-import path from 'path';
+import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
-import { fileURLToPath } from 'url';
-import type { GameState } from './src/types/game';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { toAudienceState } from './src/utils/audienceState';
-import { isNewerState } from './src/utils/stateVersion';
+import { createInitialGameState } from './src/utils/gameDefaults';
+import { applyRoomCommand, type RoomMatch } from './src/utils/roomCommands';
+import { QUESTION_BANK } from './src/data/questionBank';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
+const root = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-const PORT = process.env.PORT || 3000;
+const port = Number(process.env.PORT || 3000);
+const dataDir = process.env.FAMILY_CHALLENGE_ROOM_DIR || path.join(root, '.room-state');
+const roomPattern = /^[A-F0-9]{24}$/;
+const tokenPattern = /^[a-f0-9]{64}$/;
 
-// Enable CORS for all domains so custom domains, mobile phones and TV devices can sync seamlessly
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
+interface SavedRoom extends RoomMatch { hostDigest: string }
+const audiences = new Map<string, Set<Response>>();
+const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+const filename = (id: string) => path.join(dataDir, `${id}.json`);
+const sseData = (room: SavedRoom) => `data: ${JSON.stringify({ state: toAudienceState(room.state), serverNow: Date.now() })}\n\n`;
+
+app.disable('x-powered-by');
+app.use((_req, res, next) => {
+  res.set({ 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
   next();
 });
+app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+app.use(express.json({ limit: '1mb' }));
 
-app.use(express.json({ limit: '10mb' }));
-
-// Local Express persistence. Vercel needs a configured durable backend before this API can be used there.
-interface RoomData {
-  state: GameState | null;
-  lastUpdated: number;
-  clients: Set<Response>;
+function save(room: SavedRoom) {
+  fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  const target = filename(room.state.roomId!);
+  const temp = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(room), { mode: 0o600 });
+  fs.renameSync(temp, target);
 }
 
-const rooms = new Map<string, RoomData>();
-const roomDataDir = process.env.FAMILY_CHALLENGE_ROOM_DIR || path.resolve(__dirname, '.room-state');
-const cleanRoomId = (value: unknown): string | null => {
-  if (typeof value !== 'string') return null;
-  const room = value.toUpperCase().trim();
-  return /^[A-Z0-9_-]{1,32}$/.test(room) ? room : null;
-};
-
-function validPublicState(value: unknown): value is GameState {
-  if (!value || typeof value !== 'object') return false;
-  const state = value as GameState;
-  if (!Number.isSafeInteger(state.actionId) || state.actionId < 0 || !Number.isFinite(state.lastUpdated)) return false;
-  if (!Number.isInteger(state.currentRound) || state.currentRound < 1 || state.currentRound > 4) return false;
-  if (!Array.isArray(state.revealedAnswers) || !Array.isArray(state.currentQuestion?.answers)) return false;
-  if (state.revealedAnswers.length !== state.currentQuestion.answers.length) return false;
-  return state.currentQuestion.answers.every((answer, index) =>
-    typeof answer.text === 'string' && typeof answer.points === 'number' &&
-    (state.revealedAnswers[index] || (answer.text === '' && answer.points === 0))
-  );
-}
-
-function roomFromRequest(req: Request): string | null {
-  return cleanRoomId(req.query.room || req.body?.room || 'MAIN');
-}
-
-app.get('/api/connect-info', (_req: Request, res: Response) => {
-  const addresses = Object.values(os.networkInterfaces()).flatMap((entries) => entries ?? [])
-    .filter((entry) => entry.family === 'IPv4' && !entry.internal)
-    .map((entry) => entry.address);
-  res.json({ localUrl: addresses.length ? `http://${addresses[0]}:${PORT}` : null });
-});
-
-function getOrCreateRoom(roomId: string): RoomData {
-  let room = rooms.get(roomId);
-  if (!room) {
-    let savedState: GameState | null = null;
-    try {
-      const data = JSON.parse(fs.readFileSync(path.join(roomDataDir, `${roomId}.json`), 'utf8')) as GameState;
-      if (validPublicState(data) && data.roomId === roomId) savedState = data;
-    } catch { /* A new room has no saved state. */ }
-    room = {
-      state: savedState,
-      lastUpdated: savedState?.lastUpdated ?? Date.now(),
-      clients: new Set(),
-    };
-    rooms.set(roomId, room);
-  }
-  return room;
-}
-
-// 1. Get room state
-app.get('/api/sync/state', (req: Request, res: Response) => {
-  const roomId = roomFromRequest(req);
-  if (!roomId) return res.status(400).json({ error: 'Invalid room code' });
-  const room = getOrCreateRoom(roomId);
-  res.json({
-    state: room.state,
-    lastUpdated: room.lastUpdated,
-    peerCount: room.clients.size,
-  });
-});
-
-// 2. Post room state update and broadcast to all connected devices in this room
-app.post('/api/sync/state', (req: Request, res: Response) => {
-  const roomId = roomFromRequest(req);
-  if (!roomId) return res.status(400).json({ error: 'Invalid room code' });
-  const { state } = req.body;
-  if (!state || typeof state !== 'object' || !Array.isArray(state.revealedAnswers) || !Array.isArray(state.currentQuestion?.answers)) {
-    return res.status(400).json({ error: 'Invalid game state payload' });
-  }
-
-  const room = getOrCreateRoom(roomId);
-  const nextActionId = Math.max(Number(state.actionId) || 0, (room.state?.actionId ?? 0) + 1);
-  const nextUpdated = Math.max(Date.now(), Number(state.lastUpdated) || 0, (room.state?.lastUpdated ?? 0) + 1);
-
-  const publicState = toAudienceState({
-    ...state,
-    roomId,
-    actionId: nextActionId,
-    lastUpdated: nextUpdated,
-  });
-
+function read(req: Request): SavedRoom | null {
+  const id = req.query.room;
+  if (typeof id !== 'string' || !roomPattern.test(id)) return null;
   try {
-    fs.mkdirSync(roomDataDir, { recursive: true });
-    const target = path.join(roomDataDir, `${roomId}.json`);
-    const temporary = `${target}.${process.pid}.tmp`;
-    fs.writeFileSync(temporary, JSON.stringify(publicState), { mode: 0o600 });
-    fs.renameSync(temporary, target);
-  } catch {
-    // Non-fatal on read-only serverless filesystems
-  }
-  room.state = publicState;
-  room.lastUpdated = publicState.lastUpdated;
-
-  const payload = `data: ${JSON.stringify({ type: 'STATE_UPDATE', state: publicState, roomId })}\n\n`;
-  room.clients.forEach((client) => {
-    try {
-      client.write(payload);
-    } catch {
-      room.clients.delete(client);
-    }
-  });
-
-  res.json({
-    success: true,
-    lastUpdated: room.lastUpdated,
-    actionId: publicState.actionId,
-    peerCount: room.clients.size,
-  });
-});
-
-// 3. Post sound event trigger and broadcast to audience screen devices
-app.post('/api/sync/sound', (req: Request, res: Response) => {
-  const roomId = roomFromRequest(req);
-  if (!roomId) return res.status(400).json({ error: 'Invalid room code' });
-  const { sound } = req.body;
-
-  const room = getOrCreateRoom(roomId);
-  const payload = `data: ${JSON.stringify({ type: 'TRIGGER_SOUND', sound, roomId })}\n\n`;
-
-  room.clients.forEach((client) => {
-    try {
-      client.write(payload);
-    } catch {
-      room.clients.delete(client);
-    }
-  });
-
-  res.json({ success: true });
-});
-
-// 4. Server-Sent Events stream for instant low-latency real-time synchronization
-app.get('/api/sync/events', (req: Request, res: Response) => {
-  const roomId = roomFromRequest(req);
-  if (!roomId) return res.status(400).json({ error: 'Invalid room code' });
-  const room = getOrCreateRoom(roomId);
-
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-    'Access-Control-Allow-Origin': '*',
-  });
-
-  room.clients.add(res);
-
-  res.write(`data: ${JSON.stringify({ type: 'CONNECTED', roomId, peerCount: room.clients.size })}\n\n`);
-
-  // Send current state immediately on connect
-  if (room.state) {
-    res.write(`data: ${JSON.stringify({ type: 'STATE_UPDATE', state: room.state, roomId })}\n\n`);
-  }
-
-  // Keep-alive heartbeat every 20s
-  const heartbeat = setInterval(() => {
-    try {
-      res.write(': heartbeat\n\n');
-    } catch {
-      clearInterval(heartbeat);
-      room.clients.delete(res);
-    }
-  }, 20000);
-
-  req.on('close', () => {
-    clearInterval(heartbeat);
-    room.clients.delete(res);
-  });
-});
-
-async function startServer() {
-  const isProd = process.env.NODE_ENV === 'production';
-
-  if (!isProd) {
-    // Vite middleware in development
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    // Serve static files in production
-    app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (_req: Request, res: Response) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
-    });
-  }
-
-  app.listen(Number(PORT), '0.0.0.0', () => {
-    console.log(`Family Feud server running on http://0.0.0.0:${PORT}`);
-  });
+    const room = JSON.parse(fs.readFileSync(filename(id), 'utf8')) as SavedRoom;
+    return tokenPattern.test(room.hostDigest) && room.state.roomId === id ? room : null;
+  } catch { return null; }
 }
 
-startServer();
+function authorized(req: Request, room: SavedRoom) {
+  const token = req.get('Authorization')?.match(/^Bearer ([a-f0-9]{64})$/)?.[1];
+  return !!token && timingSafeEqual(Buffer.from(hash(token), 'hex'), Buffer.from(room.hostDigest, 'hex'));
+}
+
+function privateView(room: SavedRoom, includeBank = false) {
+  return {
+    state: room.state, canUndo: room.history.length > 0, serverNow: Date.now(),
+    ...(includeBank ? { questions: [...room.customQuestions, ...QUESTION_BANK] } : {}),
+  };
+}
+
+// Keep the existing LAN discovery and SSE routes. Only the server can write game state.
+app.get('/api/connect-info', (_req, res) => {
+  const addresses = Object.values(os.networkInterfaces()).flatMap(entries => entries ?? [])
+    .filter(entry => entry.family === 'IPv4' && !entry.internal).map(entry => entry.address);
+  res.json({ localUrl: addresses.length ? `http://${addresses[0]}:${port}` : null });
+});
+
+const creationAttempts = new Map<string, number>();
+app.post('/api/sync/rooms', (req, res) => {
+  const now = Date.now();
+  for (const [ip, expiry] of creationAttempts) if (expiry <= now) creationAttempts.delete(ip);
+  const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+  if ((creationAttempts.get(ip) ?? 0) > now) return res.status(429).json({ error: 'انتظر لحظة قبل إنشاء غرفة أخرى.' });
+  creationAttempts.set(ip, now + 2500);
+  const id = randomBytes(12).toString('hex').toUpperCase();
+  const token = randomBytes(32).toString('hex');
+  const room = { state: { ...createInitialGameState(), roomId: id }, hostDigest: hash(token), history: [], customQuestions: [] };
+  try { save(room); } catch { return res.status(503).json({ error: 'تعذّر حفظ الغرفة على الخادم.' }); }
+  res.status(201).json({ roomId: id, token, ...privateView(room, true) });
+});
+
+app.get('/api/sync/state', (req, res) => {
+  const room = read(req);
+  if (!room) return res.status(404).json({ error: 'الغرفة غير موجودة.' });
+  res.json({ state: toAudienceState(room.state), serverNow: Date.now() });
+});
+
+app.get('/api/sync/host', (req, res) => {
+  const room = read(req);
+  if (!room || !authorized(req, room)) return res.status(403).json({ error: 'افتح رابط التحكم الخاص بهالغرفة.' });
+  res.json(privateView(room, true));
+});
+
+app.post('/api/sync/command', (req, res) => {
+  const room = read(req);
+  if (!room || !authorized(req, room)) return res.status(403).json({ error: 'أمر التحكم يحتاج مفتاح المقدم.' });
+  const { expectedActionId, command } = req.body ?? {};
+  if (expectedActionId !== room.state.actionId) return res.status(409).json({ ...privateView(room, true), error: 'تغيّرت حالة المباراة. راجعها وحاول مرة ثانية.' });
+  const result = applyRoomCommand(room, command);
+  if (result === room) return res.status(422).json({ error: 'هذا الإجراء غير متاح بهالمرحلة أو بياناته غير صالحة.' });
+  const updated = { ...result, hostDigest: room.hostDigest };
+  try { save(updated); } catch { return res.status(503).json({ error: 'تعذّر حفظ الإجراء. لم يتغير رصيد المباراة.' }); }
+  for (const client of audiences.get(room.state.roomId!) ?? []) client.write(sseData(updated));
+  res.json(privateView(updated, command?.type === 'addQuestion'));
+});
+
+app.get('/api/sync/events', (req, res) => {
+  const room = read(req);
+  if (!room) return res.status(404).end();
+  const id = room.state.roomId!;
+  const group = audiences.get(id) ?? new Set<Response>();
+  if (group.size >= 24) return res.status(429).end();
+  audiences.set(id, group);
+  res.status(200).set({ 'Content-Type': 'text/event-stream', 'X-Accel-Buffering': 'no', Connection: 'keep-alive', 'Cache-Control': 'no-cache, no-transform' });
+  res.flushHeaders();
+  res.write(sseData(room));
+  group.add(res);
+  const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 15000);
+  res.on('close', () => {
+    clearInterval(heartbeat);
+    group.delete(res);
+    if (!group.size) audiences.delete(id);
+  });
+});
+app.use('/api', (_req, res) => res.status(404).json({ error: 'مسار غير متاح.' }));
+
+// Serve the compiled client only. Vite source serving would expose the question bank.
+const dist = path.join(root, 'dist');
+app.use(express.static(dist));
+app.get(['/', '/play', '/host', '/admin'], (_req, res) => res.sendFile(path.join(dist, 'index.html')));
+app.listen(port, '0.0.0.0', () => console.log(`Family Feud: http://localhost:${port}`));

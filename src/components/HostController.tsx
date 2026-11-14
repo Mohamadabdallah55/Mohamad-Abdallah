@@ -1,1006 +1,189 @@
-import { useRef, useState } from 'react';
-import { GameState, Question } from '../types/game';
-import { QUESTION_BANK } from '../data/questionBank';
-import { getMultiplierForRound, pickNewQuestion } from '../utils/gameDefaults';
+import { useEffect, useState } from 'react';
+import type { GameState, Question } from '../types/game';
+import type { Command, TeamId } from '../utils/roomCommands';
+import { getTimerRemaining, ROUND_MULTIPLIERS } from '../utils/gameEngine';
 import { AnimatedCounter } from './AnimatedCounter';
+import { ShowLogo } from './ShowLogo';
 
-interface HostControllerProps {
-  state: GameState;
-  updateState: (updater: (prev: GameState) => GameState) => void;
-  triggerSound: (sound: 'chime' | 'strike' | 'bell' | 'tick' | 'duplicate' | 'applause' | 'fanfare' | 'steal') => void;
-  onOpenConnectModal?: () => void;
-  onSwitchToAudience?: () => void;
-  p2pConnected?: boolean;
-  serverConnected?: boolean;
-  roomId?: string;
-  onUndo?: () => void;
-  onRestartGame?: () => void;
-  canUndo?: boolean;
+interface Props {
+  state: GameState; questions: Question[]; canUndo: boolean; pending: boolean; error: string;
+  serverOffset: number; send: (command: Command) => Promise<boolean>; onConnect: () => void;
+}
+const labels = { FACE_OFF: 'يلا نبلّش الجولة!', GUESSING: 'الجولة شغّالة', STEAL: 'فرصة السرقة!', ROUND_OVER: 'تم اعتماد نتيجة الجولة', GAME_OVER: 'انتهت المباراة' };
+const starterAnswers = () => [35, 25, 20, 12, 8].map(points => ({ text: '', points }));
+
+export function HostController({ state: s, questions, canUndo, pending, error, send, serverOffset, onConnect }: Props) {
+  const [panel, setPanel] = useState<'questions' | 'new' | 'settings' | null>(null);
+  const [search, setSearch] = useState('');
+  const [category, setCategory] = useState('');
+  const [suggestedRound, setSuggestedRound] = useState('');
+  const [prompt, setPrompt] = useState('');
+  const [newCategory, setNewCategory] = useState('أسئلة خاصة');
+  const [answers, setAnswers] = useState(starterAnswers);
+  const [now, setNow] = useState(Date.now());
+  const playing = s.phase === 'GUESSING';
+  const stealing = s.phase === 'STEAL';
+  const setup = s.phase === 'FACE_OFF';
+  const finishedRound = s.phase === 'ROUND_OVER';
+  const finished = s.phase === 'GAME_OVER';
+  useEffect(() => {
+    if (!s.timerRunning) return;
+    const id = window.setInterval(() => setNow(Date.now()), 150);
+    return () => window.clearInterval(id);
+  }, [s.timerRunning]);
+  const remain = getTimerRemaining(s, Math.max(now, s.lastUpdated - serverOffset) + serverOffset);
+  const teams = [['A', s.teamA], ['B', s.teamB]] as const;
+  const categories = [...new Set(questions.map(q => q.category))];
+  const available = questions.filter(question =>
+    (!category || question.category === category) &&
+    (!suggestedRound || String(question.suggestedRound) === suggestedRound) &&
+    (!search || question.questionText.includes(search) || question.answers.some(answer => answer.text.includes(search)))
+  );
+  const act = (command: Command) => () => { void send(command); };
+  const usableAnswers = answers.filter(a => a.text.trim());
+  const total = usableAnswers.reduce((sum, a) => sum + a.points, 0);
+  const showError = error && <p className="host-error" role="alert">{error}</p>;
+
+  return <div className="control-room" dir="rtl">
+    <header className="remote-head">
+      <ShowLogo />
+      <div><b>استوديو المقدم</b><small>الجولة {s.currentRound} / 4</small></div>
+      <button onClick={onConnect}>ربط الشاشة / الهاتف</button>
+    </header>
+    {!panel && showError}
+    <main className="remote-main">
+      <div className="remote-score">
+        {teams.map(([id, team]) => <div key={id} className={s.activeTeam === id ? 'on-turn' : ''}>
+          <span>{team.name}</span><b><AnimatedCounter value={team.score} /></b>
+        </div>)}
+        <div className="remote-bank"><span>بنك الجولة <bdi>×{s.roundMultiplier}</bdi></span><b>{s.roundBank * s.roundMultiplier}</b></div>
+      </div>
+      <fieldset disabled={pending} className="remote-controls">
+        <div className="remote-tools">
+          <button onClick={() => setPanel('questions')}>بنك الأسئلة</button>
+          <button onClick={() => setPanel('settings')}>الفرق والإعدادات</button>
+          <button onClick={act({ type: 'sound', muted: !s.muted })} aria-pressed={s.muted}>{s.muted ? 'تشغيل الصوت' : 'كتم الصوت'}</button>
+          <button onClick={act({ type: 'skip' })} disabled={!s.showEvent}>تخطّي المشهد</button>
+        </div>
+        <section className="remote-board">
+          <span className="remote-tag">{labels[s.phase]} · {s.currentQuestion?.category}</span>
+          <h1>{s.currentQuestion?.questionText}</h1>
+          <small>{s.currentQuestion?.pointsSource === 'survey' && s.currentQuestion.sourceNote ? s.currentQuestion.sourceNote : 'أوزان تقديرية للعبة'}</small>
+          {setup && <div className="remote-start">
+            <span>مين أخذ المواجهة؟</span>
+            <div>{teams.map(([team, entry]) => <button className="remote-gold" key={team} onClick={act({ type: 'start', team })}>بلّش مع {entry.name}</button>)}</div>
+          </div>}
+          {stealing && <div className="remote-steal">
+            <b>فرصة واحدة لـ{s.stealTeam === 'A' ? s.teamA.name : s.teamB.name}</b>
+            <div><button className="remote-gold" onClick={act({ type: 'resolve', success: true })}>نجحت السرقة</button>
+              <button onClick={act({ type: 'resolve', success: false })}>فشلت السرقة</button></div>
+          </div>}
+          <div className="remote-answers">
+            {s.currentQuestion?.answers.map((answer, index) => <button key={index} className={s.revealedAnswers[index] ? 'is-shown' : ''}
+              disabled={!playing || s.revealedAnswers[index]} onClick={act({ type: 'reveal', index })}>
+              <span className="remote-rank">{index + 1}</span><strong>{answer.text}</strong><b>{answer.points}</b>
+              <span className="remote-reveal-label">{s.revealedAnswers[index] ? 'مكشوف' : 'كشف'}</span>
+            </button>)}
+          </div>
+          {playing && <details className="remote-manual">
+            <summary>اعتماد بنك الجولة يدويًا</summary>
+            <div>{teams.map(([team, entry]) => <button key={team} onClick={act({ type: 'award', team })} disabled={!s.roundBank}>اعتماد لـ{entry.name}</button>)}</div>
+          </details>}
+          {finishedRound && <div className="remote-next">
+            <button disabled={s.revealedAnswers.every(Boolean)} onClick={act({ type: 'revealAll' })}>كشف المتبقي بلا نقاط</button>
+            <button className="remote-gold" onClick={act({ type: s.currentRound < 4 ? 'next' : 'finish' })}>{s.currentRound < 4 ? 'الجولة التالية' : 'إعلان النتيجة النهائية'}</button>
+          </div>}
+          {finished && <div className="remote-next">
+            <b>{s.teamA.score === s.teamB.score ? 'تعادل · لا فائز' : `الفائز: ${(s.teamA.score > s.teamB.score ? s.teamA : s.teamB).name}`}</b>
+            <button className="remote-gold" onClick={() => { if (window.confirm('تبدأ مباراة جديدة في نفس الغرفة؟')) void send({ type: 'restart' }); }}>مباراة جديدة</button>
+            <a href="/">العودة للرئيسية</a>
+          </div>}
+        </section>
+        {(playing || stealing) && <div className="remote-tools remote-timer">
+          <b>{s.timerVisible ? `${remain} ث` : 'مؤقت اختياري'}</b>
+          <button onClick={act({ type: 'timer' })}>{s.timerRunning ? 'إيقاف' : s.timerVisible && remain ? 'استئناف' : 'تشغيل 30ث'}</button>
+          {s.timerVisible && <button onClick={act({ type: 'timerReset' })}>إعادة ضبط</button>}
+        </div>}
+        <div className="remote-dock">
+          {playing && <button className="remote-strike" onClick={act({ type: 'strike' })}><b>✕</b> تسجيل خطأ · {s.strikes}/3</button>}
+          {(playing || stealing) && !!s.strikes && <button onClick={act({ type: 'undoStrike' })}>إلغاء X</button>}
+          {playing && <button disabled={!s.roundBank} onClick={act({ type: 'steal' })}>ابدأ السرقة</button>}
+          <button disabled={!canUndo} onClick={act({ type: 'undo' })}>↶ تراجع</button>
+        </div>
+      </fieldset>
+    </main>
+    {panel && <div className="remote-backdrop" onClick={() => setPanel(null)}>
+      <section className="remote-sheet" role="dialog" aria-modal="true" aria-label="إعدادات المقدم" onClick={e => e.stopPropagation()}>
+        <header><h2>{panel === 'questions' ? 'بنك الأسئلة' : panel === 'new' ? 'إضافة سؤالك' : 'إعدادات المباراة'}</h2>
+          <button onClick={() => setPanel(null)} aria-label="إغلاق">✕</button>
+        </header>
+        {showError}
+        <fieldset disabled={pending}>
+          {panel === 'questions' && <>
+            <div className="remote-tools"><input aria-label="بحث في الأسئلة" placeholder="ابحث عن سؤال…" value={search} onChange={e => setSearch(e.target.value)} />
+              <select aria-label="فئة الأسئلة" value={category} onChange={e => setCategory(e.target.value)}><option value="">كل الفئات</option>{categories.map(cat => <option key={cat}>{cat}</option>)}</select>
+              <select aria-label="الجولة المقترحة" value={suggestedRound} onChange={e => setSuggestedRound(e.target.value)}>
+                <option value="">كل الجولات</option>
+                {[1, 2, 3, 4].map(round => <option key={round} value={round}>مقترحة للجولة {round}</option>)}
+              </select>
+              <button className="remote-gold" onClick={() => setPanel('new')}>إضافة سؤال</button></div>
+            {!setup && <p>اختيار السؤال متاح قبل بداية الجولة.</p>}
+            <ol className="remote-questions">{available.map(q => <li key={q.id}>
+              <span>{q.questionText}<small>{q.category} · {q.answers.length} إجابات{q.suggestedRound && ` · مقترح للجولة ${q.suggestedRound}`}</small></span>
+              <button disabled={!setup || s.burntQuestionIds.includes(q.id)} onClick={async () => {
+                if (await send({ type: 'question', id: q.id })) setPanel(null);
+              }}>{q.id === s.currentQuestion?.id ? 'الحالي' : s.burntQuestionIds.includes(q.id) ? 'استُخدم' : 'اختيار'}</button>
+            </li>)}</ol>
+          </>}
+          {panel === 'new' && <form className="remote-form" onSubmit={async e => {
+            e.preventDefault();
+            if (await send({ type: 'addQuestion', question: { id: 0, questionText: prompt, category: newCategory, answers: usableAnswers }, select: setup })) {
+              setPrompt(''); setAnswers(starterAnswers()); setPanel(setup ? null : 'questions');
+            }
+          }}>
+            <label>السؤال<input required maxLength={250} value={prompt} onChange={e => setPrompt(e.target.value)} /></label>
+            <label>الفئة<input required maxLength={60} value={newCategory} onChange={e => setNewCategory(e.target.value)} /></label>
+            {answers.map((a, index) => <div className="remote-form-row" key={index}>
+              <input aria-label={`إجابة ${index + 1}`} placeholder={`إجابة ${index + 1}`} maxLength={100} value={a.text}
+                onChange={e => setAnswers(old => old.map((answer, i) => i === index ? { ...answer, text: e.target.value } : answer))} />
+              <input aria-label={`نقاط الإجابة ${index + 1}`} type="number" min={0} max={100} value={a.points}
+                onChange={e => setAnswers(old => old.map((answer, i) => i === index ? { ...answer, points: Number(e.target.value) } : answer))} />
+              <button type="button" disabled={answers.length <= 2} aria-label="حذف خانة" onClick={() => setAnswers(old => old.filter((_, i) => i !== index))}>−</button>
+            </div>)}
+            <div className="remote-tools"><button type="button" disabled={answers.length >= 8} onClick={() => setAnswers(old => [...old, { text: '', points: 0 }])}>خانة إضافية</button>
+              <span>النقاط التقديرية: {total}/100</span><button className="remote-gold" disabled={total !== 100 || usableAnswers.length < 2}>حفظ السؤال</button></div>
+          </form>}
+          {panel === 'settings' && <div className="remote-form">
+            {teams.map(([id, team]) => <TeamSettings key={id} id={id} team={team} disabled={finished} send={send} />)}
+            <MultiplierSettings key={(s.multipliers ?? ROUND_MULTIPLIERS).join(',')} values={s.multipliers ?? ROUND_MULTIPLIERS} disabled={s.matchStarted || !setup || s.currentRound !== 1} send={send} />
+            <p>عند تساوي المجموع بعد الجولة الرابعة يُعلَن التعادل.</p>
+          </div>}
+        </fieldset>
+      </section>
+    </div>}
+  </div>;
 }
 
-export function HostController({
-  state,
-  updateState,
-  triggerSound,
-  onOpenConnectModal,
-  onSwitchToAudience,
-  p2pConnected = false,
-  serverConnected = false,
-  roomId = 'FEUD',
-  onUndo,
-  onRestartGame,
-  canUndo = false,
-}: HostControllerProps) {
-  const [customQuestions, setCustomQuestions] = useState<Question[]>(() => {
-    if (typeof window === 'undefined') return [];
-    try {
-      const saved = localStorage.getItem('family_feud_custom_questions');
-      return saved ? (JSON.parse(saved) as Question[]) : [];
-    } catch {
-      return [];
-    }
-  });
+function TeamSettings({ id, team, disabled, send }: { id: TeamId; team: GameState['teamA']; disabled: boolean; send: Props['send'] }) {
+  return <form className="remote-form-row" onSubmit={e => {
+    e.preventDefault(); const data = new FormData(e.currentTarget);
+    void send({ type: 'team', team: id, name: String(data.get('name')), score: Number(data.get('score')) });
+  }}>
+    <label>اسم الفريق {id}<input name="name" required maxLength={40} key={team.name} defaultValue={team.name} disabled={disabled} /></label>
+    <label>النقاط<input name="score" required type="number" min={0} max={999999} key={team.score} defaultValue={team.score} disabled={disabled} /></label>
+    <button disabled={disabled}>حفظ</button>
+  </form>;
+}
 
-  const questionBank = [...customQuestions, ...QUESTION_BANK];
-  const revealLock = useRef(new Map<number, number>());
-  const [selectedCategory, setSelectedCategory] = useState<string>('الكل');
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  const [showQuestionsDrawer, setShowQuestionsDrawer] = useState<boolean>(false);
-  const [showTeamEditModal, setShowTeamEditModal] = useState<boolean>(false);
-  const [showAddQuestionForm, setShowAddQuestionForm] = useState<boolean>(false);
-  const [newQText, setNewQText] = useState<string>('');
-  const [newQCategory, setNewQCategory] = useState<string>('أسئلة خاصة');
-  const [newQAnswers, setNewQAnswers] = useState<{ text: string; points: number }[]>([
-    { text: '', points: 35 },
-    { text: '', points: 25 },
-    { text: '', points: 20 },
-    { text: '', points: 12 },
-    { text: '', points: 8 },
-  ]);
-
-  const categories = ['الكل', ...new Set(questionBank.map((question) => question.category))];
-
-  // Interactive Haptic Feedback for Mobile Remote Pro
-  const triggerHaptic = (pattern: number | number[] = 50) => {
-    if (typeof window !== 'undefined' && 'navigator' in window && 'vibrate' in navigator) {
-      try {
-        navigator.vibrate(pattern);
-      } catch {}
-    }
-  };
-
-  // Reveal or hide any answer at any time (including after 3 strikes or after round end)
-  const handleRevealAnswer = (index: number) => {
-    if (!state.currentQuestion) return;
-    const now = Date.now();
-    if (now - (revealLock.current.get(index) ?? 0) < 200) return;
-    revealLock.current.set(index, now);
-
-    const answer = state.currentQuestion.answers[index];
-    if (!answer) return;
-    const shouldReveal = !state.revealedAnswers[index];
-
-    triggerHaptic(shouldReveal ? 60 : 35);
-
-    updateState((prev) => {
-      if (!prev.currentQuestion) return prev;
-      const newRevealed = [...prev.revealedAnswers];
-      newRevealed[index] = shouldReveal;
-
-      const pointDelta = answer.points * prev.roundMultiplier;
-      const newBank = shouldReveal
-        ? prev.roundBank + pointDelta
-        : Math.max(0, prev.roundBank - pointDelta);
-
-      return {
-        ...prev,
-        revealedAnswers: newRevealed,
-        roundBank: newBank,
-      };
-    });
-
-    if (shouldReveal) {
-      triggerSound('chime');
-    }
-  };
-
-  // Reveal all remaining unrevealed answers on TV WITHOUT adding points to bank (classic end-of-round reveal)
-  const handleRevealAllWithoutPoints = () => {
-    if (!state.currentQuestion) return;
-    triggerHaptic([50, 30, 50]);
-    triggerSound('chime');
-    updateState((prev) => {
-      if (!prev.currentQuestion) return prev;
-      return {
-        ...prev,
-        revealedAnswers: new Array(prev.currentQuestion.answers.length).fill(true),
-      };
-    });
-  };
-
-  // Hide all answers on board and reset round bank to 0
-  const handleHideAllAnswers = () => {
-    if (!state.currentQuestion) return;
-    triggerHaptic(40);
-    updateState((prev) => {
-      if (!prev.currentQuestion) return prev;
-      return {
-        ...prev,
-        revealedAnswers: new Array(prev.currentQuestion.answers.length).fill(false),
-        roundBank: 0,
-      };
-    });
-  };
-
-  // Trigger strike - works anytime, even after 3 strikes to flash the X overlay & buzzer
-  const handleStrike = () => {
-    triggerHaptic([100, 50, 100]);
-
-    updateState((prev) => {
-      const nextStrikes = Math.min(3, prev.strikes + 1);
-      const enterSteal = nextStrikes === 3 && prev.phase !== 'STEAL' && prev.phase !== 'ROUND_OVER';
-
-      return {
-        ...prev,
-        strikes: nextStrikes,
-        strikeOverlayActive: true,
-        strikeOverlayCount: (prev.strikeOverlayCount || 0) + 1,
-        phase: enterSteal ? 'STEAL' : prev.phase,
-        stealTeam: enterSteal ? (prev.activeTeam === 'A' ? 'B' : 'A') : prev.stealTeam,
-      };
-    });
-
-    triggerSound('strike');
-  };
-
-  // Reset strikes back to 0
-  const handleResetStrikes = () => {
-    triggerHaptic(40);
-    updateState((prev) => ({
-      ...prev,
-      strikes: 0,
-      strikeOverlayActive: false,
-      phase: prev.phase === 'STEAL' ? 'GUESSING' : prev.phase,
-    }));
-  };
-
-  // Select active team turn anytime
-  const handleSetTurn = (team: 'A' | 'B') => {
-    triggerHaptic(45);
-    triggerSound('bell');
-    updateState((prev) => ({
-      ...prev,
-      activeTeam: team,
-      phase: prev.phase === 'FACE_OFF' ? 'GUESSING' : prev.phase,
-      originalTeam: prev.originalTeam || team,
-    }));
-  };
-
-  // Award round bank to Team A or Team B anytime
-  const handleAwardBank = (team: 'A' | 'B') => {
-    triggerHaptic([80, 40, 80, 40, 160]);
-    triggerSound('bell');
-    updateState((prev) => {
-      const pointsToAward = prev.roundBank;
-      return {
-        ...prev,
-        teamA: team === 'A' ? { ...prev.teamA, score: prev.teamA.score + pointsToAward } : prev.teamA,
-        teamB: team === 'B' ? { ...prev.teamB, score: prev.teamB.score + pointsToAward } : prev.teamB,
-        roundBank: 0,
-        phase: 'ROUND_OVER',
-        awardedRound: prev.currentRound,
-      };
-    });
-  };
-
-  // Resolve Steal attempt
-  const handleResolveSteal = (success: boolean) => {
-    triggerHaptic(success ? [70, 40, 120] : [120, 60, 120]);
-    triggerSound(success ? 'steal' : 'strike');
-    updateState((prev) => {
-      const winnerTeam = success
-        ? prev.stealTeam || (prev.activeTeam === 'A' ? 'B' : 'A')
-        : prev.activeTeam || 'A';
-      const pointsToAward = prev.roundBank;
-
-      return {
-        ...prev,
-        teamA: winnerTeam === 'A' ? { ...prev.teamA, score: prev.teamA.score + pointsToAward } : prev.teamA,
-        teamB: winnerTeam === 'B' ? { ...prev.teamB, score: prev.teamB.score + pointsToAward } : prev.teamB,
-        roundBank: 0,
-        phase: 'ROUND_OVER',
-        awardedRound: prev.currentRound,
-        strikeOverlayActive: !success ? true : prev.strikeOverlayActive,
-        strikeOverlayCount: !success ? (prev.strikeOverlayCount || 0) + 1 : prev.strikeOverlayCount,
-      };
-    });
-  };
-
-  // Next Round / Next Question anytime
-  const handleNextRound = () => {
-    triggerHaptic([60, 40, 60]);
-    updateState((prev) => {
-      const nextRound = prev.currentRound < 4 ? prev.currentRound + 1 : prev.currentRound;
-      const multiplier = getMultiplierForRound(nextRound);
-      const nextQ = pickNewQuestion(questionBank, prev.burntQuestionIds) || questionBank[0];
-
-      return {
-        ...prev,
-        currentRound: nextRound,
-        roundMultiplier: multiplier,
-        roundBank: 0,
-        strikes: 0,
-        activeTeam: null,
-        faceOffWinner: null,
-        stealTeam: null,
-        originalTeam: null,
-        phase: 'FACE_OFF',
-        awardedRound: null,
-        strikeOverlayActive: false,
-        currentQuestion: nextQ,
-        revealedAnswers: new Array(nextQ.answers.length).fill(false),
-        burntQuestionIds: [...prev.burntQuestionIds, nextQ.id],
-      };
-    });
-  };
-
-  // Trigger Grand Victory Ceremony anytime
-  const handleEndGameAndCrownWinner = () => {
-    triggerHaptic([100, 50, 150]);
-    triggerSound('fanfare');
-    updateState((prev) => ({
-      ...prev,
-      phase: 'GAME_OVER',
-    }));
-  };
-
-  // Select any question from drawer anytime
-  const handleSelectQuestion = (q: Question) => {
-    triggerHaptic(40);
-    updateState((prev) => ({
-      ...prev,
-      currentQuestion: q,
-      revealedAnswers: new Array(q.answers.length).fill(false),
-      roundBank: 0,
-      strikes: 0,
-      faceOffWinner: null,
-      stealTeam: null,
-      originalTeam: null,
-      phase: 'FACE_OFF',
-      awardedRound: null,
-      strikeOverlayActive: false,
-      burntQuestionIds: prev.burntQuestionIds.includes(q.id)
-        ? prev.burntQuestionIds
-        : [...prev.burntQuestionIds, q.id],
-    }));
-    setShowQuestionsDrawer(false);
-  };
-
-  // Save a new custom question created on the phone
-  const handleCreateCustomQuestion = () => {
-    const cleanText = newQText.trim();
-    const validAnswers = newQAnswers
-      .map((a) => ({ text: a.text.trim(), points: Math.max(1, Number(a.points) || 10) }))
-      .filter((a) => a.text.length > 0);
-
-    if (!cleanText || validAnswers.length === 0) return;
-
-    const created: Question = {
-      id: Date.now(),
-      category: newQCategory.trim() || 'أسئلة خاصة',
-      questionText: cleanText,
-      answers: validAnswers,
-    };
-
-    const updatedCustom = [created, ...customQuestions];
-    setCustomQuestions(updatedCustom);
-    try {
-      localStorage.setItem('family_feud_custom_questions', JSON.stringify(updatedCustom));
-    } catch {}
-
-    setNewQText('');
-    setNewQAnswers([
-      { text: '', points: 35 },
-      { text: '', points: 25 },
-      { text: '', points: 20 },
-      { text: '', points: 12 },
-      { text: '', points: 8 },
-    ]);
-    setShowAddQuestionForm(false);
-    handleSelectQuestion(created);
-  };
-
-  const filteredQuestions = questionBank.filter((q) => {
-    const matchesCat = selectedCategory === 'الكل' || selectedCategory === 'all' || q.category === selectedCategory;
-    const matchesQuery =
-      !searchQuery ||
-      q.questionText.includes(searchQuery) ||
-      q.answers.some((a) => a.text.includes(searchQuery));
-    return matchesCat && matchesQuery;
-  });
-
-  return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 p-3 md:p-6 pb-24" dir="rtl">
-      {/* Top Header: Logos & Primary Navigation */}
-      <header className="mx-auto max-w-4xl flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4 mb-4">
-        <div className="flex items-center gap-2">
-          <div className="rounded-2xl border-2 border-amber-400 bg-gradient-to-b from-blue-800 to-blue-950 px-3.5 py-2 font-display text-xs sm:text-sm font-black text-amber-200">
-            تحدّي العائلة · تحكم المقدم
-          </div>
-          {onUndo && (
-            <button
-              type="button"
-              onClick={() => {
-                triggerHaptic(35);
-                onUndo();
-              }}
-              disabled={!canUndo}
-              className="rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-800 disabled:opacity-40 active:scale-95 transition-all"
-              title="تراجع عن آخر حركة"
-            >
-              ↶ تراجع
-            </button>
-          )}
-        </div>
-
-        {/* Clear Action Buttons */}
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Main button to switch/display Audience Screen */}
-          {onSwitchToAudience && (
-            <button
-              onClick={onSwitchToAudience}
-              className="flex items-center gap-1.5 rounded-xl border-2 border-emerald-400 bg-emerald-600 px-3.5 py-2 text-xs md:text-sm font-black text-white hover:bg-emerald-500 active:scale-95 transition-all"
-            >
-              <span>📺</span>
-              <span>عرض شاشة التلفزيون</span>
-            </button>
-          )}
-
-          {/* Dual Device Modal Button */}
-          {onOpenConnectModal && (
-            <button
-              onClick={onOpenConnectModal}
-              className="flex items-center gap-1.5 rounded-xl border border-amber-400 bg-amber-500/20 px-3 py-2 text-xs font-bold text-amber-300 hover:bg-amber-500/30 active:scale-95 transition-all"
-            >
-              <span>📱</span>
-              <span>ربط الجوال (QR)</span>
-            </button>
-          )}
-
-          {/* Crown Winner Button */}
-          <button
-            onClick={handleEndGameAndCrownWinner}
-            className="flex items-center gap-1 rounded-xl border-2 border-amber-400 bg-gradient-to-r from-amber-500 to-yellow-500 px-3.5 py-2 text-xs font-black text-slate-950 hover:brightness-110 active:scale-95 transition-all"
-          >
-            <span>🏆</span>
-            <span>تتويج الفائز</span>
-          </button>
-        </div>
-      </header>
-
-      {/* Main Simplified Command Center */}
-      <main className="mx-auto max-w-4xl space-y-4">
-        {/* Connection status */}
-        <div
-          className={`flex items-center justify-between px-3.5 py-2 rounded-2xl border text-xs font-bold transition-all ${
-            p2pConnected || serverConnected
-              ? 'bg-emerald-950/70 border-emerald-500/60 text-emerald-300'
-              : 'bg-amber-950/70 border-amber-500/60 text-amber-300'
-          }`}
-        >
-          <div className="flex items-center gap-2">
-            <span
-              className={`h-2.5 w-2.5 rounded-full ${
-                p2pConnected || serverConnected ? 'bg-emerald-400' : 'bg-amber-400'
-              }`}
-            />
-            <span>
-              {p2pConnected
-                ? `🟢 متصل بشاشة التلفزيون مباشرة (الغرفة: ${roomId})`
-                : serverConnected
-                  ? `🟢 متصل بالخادم المباشر (الغرفة: ${roomId})`
-                  : `🟡 جاري البحث عن شاشة العرض... (الغرفة: ${roomId})`}
-            </span>
-          </div>
-          {onOpenConnectModal && (
-            <button
-              type="button"
-              onClick={onOpenConnectModal}
-              className="font-mono text-[11px] bg-black/50 border border-slate-700 px-2 py-1 rounded-lg text-white shrink-0"
-            >
-              ربط الشاشة ↗
-            </button>
-          )}
-        </div>
-
-        {/* 1. Scoreboard Bar */}
-        <div className="grid grid-cols-3 gap-2 sm:gap-4 text-center">
-          {/* Team A */}
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={() => handleSetTurn('A')}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') handleSetTurn('A');
-            }}
-            className={`cursor-pointer rounded-2xl border-2 p-3 transition-all ${
-              state.activeTeam === 'A'
-                ? 'border-amber-400 bg-blue-950/80 scale-[1.02]'
-                : 'border-slate-800 bg-slate-900/60'
-            }`}
-          >
-            <div className="flex items-center justify-center gap-1 text-xs text-blue-300 font-bold truncate">
-              <span>{state.teamA.name}</span>
-              {state.activeTeam === 'A' && (
-                <span className="text-[10px] bg-amber-400 text-slate-950 px-1.5 py-0.5 rounded font-black">
-                  يلعب
-                </span>
-              )}
-            </div>
-            <div className="font-display font-black text-2xl md:text-4xl text-white tabular-nums mt-0.5">
-              <AnimatedCounter value={state.teamA.score} />
-            </div>
-          </div>
-
-          {/* Round Bank */}
-          <div className="rounded-2xl border-2 border-amber-400/80 bg-amber-950/30 p-3 flex flex-col justify-between">
-            <span className="text-[11px] md:text-xs font-black text-amber-300 uppercase block">
-              بنك الجولة {state.currentRound}/4 {state.roundMultiplier > 1 ? `(×${state.roundMultiplier})` : ''}
-            </span>
-            <div className="font-display font-black text-3xl md:text-5xl text-amber-300 tabular-nums">
-              <AnimatedCounter value={state.roundBank} />
-            </div>
-            <button
-              type="button"
-              onClick={() => handleSetTurn(state.activeTeam === 'A' ? 'B' : 'A')}
-              className="mt-1 rounded-lg bg-slate-800/90 border border-slate-700 py-0.5 px-2 text-[10px] font-bold text-slate-300 hover:text-white"
-            >
-              ⇄ تبديل الدور
-            </button>
-          </div>
-
-          {/* Team B */}
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={() => handleSetTurn('B')}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') handleSetTurn('B');
-            }}
-            className={`cursor-pointer rounded-2xl border-2 p-3 transition-all ${
-              state.activeTeam === 'B'
-                ? 'border-amber-400 bg-blue-950/80 scale-[1.02]'
-                : 'border-slate-800 bg-slate-900/60'
-            }`}
-          >
-            <div className="flex items-center justify-center gap-1 text-xs text-indigo-300 font-bold truncate">
-              <span>{state.teamB.name}</span>
-              {state.activeTeam === 'B' && (
-                <span className="text-[10px] bg-amber-400 text-slate-950 px-1.5 py-0.5 rounded font-black">
-                  يلعب
-                </span>
-              )}
-            </div>
-            <div className="font-display font-black text-2xl md:text-4xl text-white tabular-nums mt-0.5">
-              <AnimatedCounter value={state.teamB.score} />
-            </div>
-          </div>
-        </div>
-
-        {/* 2. Current Question Box & Hidden Answers List (Mobile Remote Pro) */}
-        <div className="rounded-3xl border-2 border-blue-500/40 bg-gradient-to-b from-blue-950 to-slate-950 p-4 md:p-6">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-blue-500/20 pb-2.5 mb-3">
-            <div className="flex items-center gap-2">
-              <span className="rounded-lg bg-blue-500/20 px-2.5 py-1 text-xs font-bold text-blue-300">
-                سؤال الجولة {state.currentRound} · {state.currentQuestion?.category}
-              </span>
-              <span className="text-[11px] text-amber-400/90 font-bold hidden sm:inline">
-                (اضغط على أي إجابة لكشفها أو إخفائها في أي وقت)
-              </span>
-            </div>
-            <button
-              onClick={() => setShowQuestionsDrawer(true)}
-              className="rounded-xl bg-blue-900/60 border border-blue-400/40 px-3 py-1.5 text-xs font-bold text-blue-200 hover:bg-blue-800 active:scale-95 transition-all"
-            >
-              📚 بنك الأسئلة ({questionBank.length})
-            </button>
-          </div>
-
-          <h2 className="font-display font-extrabold text-xl md:text-2xl text-white text-center py-1.5 leading-relaxed">
-            "{state.currentQuestion?.questionText}"
-          </h2>
-
-          {/* 3. Answers Cards - Ergonomic Touch-Friendly for Phone Thumb */}
-          <div className="mt-4 space-y-3">
-            {state.currentQuestion?.answers.map((answer, index) => {
-              const isRevealed = Boolean(state.revealedAnswers[index]);
-              return (
-                <div
-                  key={index}
-                  onClick={() => handleRevealAnswer(index)}
-                  className={`cursor-pointer flex items-center justify-between rounded-2xl border-2 p-3 sm:p-4 min-h-[64px] active:scale-[0.99] transition-all select-none ${
-                    isRevealed
-                      ? 'border-emerald-400/90 bg-emerald-950/70'
-                      : 'border-slate-700/80 bg-slate-900/95 hover:border-amber-400/60 hover:bg-slate-800/90'
-                  }`}
-                >
-                  {/* Left: Slot Number & Answer text & Point value */}
-                  <div className="flex items-center gap-3 sm:gap-4 overflow-hidden pr-1">
-                    <span
-                      className={`flex h-9 w-9 sm:h-11 sm:w-11 shrink-0 items-center justify-center rounded-xl font-display font-black text-base sm:text-xl ${
-                        isRevealed
-                          ? 'bg-emerald-400 text-slate-950'
-                          : 'bg-amber-400 text-slate-950'
-                      }`}
-                    >
-                      {index + 1}
-                    </span>
-
-                    <div className="flex flex-col min-w-0">
-                      <span className="font-display font-black text-base sm:text-xl text-white block break-words leading-tight">
-                        {answer.text}
-                      </span>
-                      <span className="text-xs sm:text-sm text-amber-300 font-extrabold flex items-center gap-1 mt-0.5">
-                        <span>+{answer.points * state.roundMultiplier} نقطة</span>
-                        {isRevealed && (
-                          <span className="text-[10px] text-emerald-300 font-bold bg-emerald-900/60 px-1.5 py-0.2 rounded">
-                            مكشوف
-                          </span>
-                        )}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Right: Big Touch Button for Thumb */}
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleRevealAnswer(index);
-                    }}
-                    className={`shrink-0 rounded-xl px-3.5 sm:px-5 py-2.5 sm:py-3 font-display font-black text-xs sm:text-sm transition-all active:scale-95 ${
-                      isRevealed
-                        ? 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
-                        : 'bg-gradient-to-r from-amber-500 to-yellow-500 text-slate-950 hover:brightness-110'
-                    }`}
-                  >
-                    {isRevealed ? '✓ مكشوف على الشاشة' : 'اكشف الجواب 🔔'}
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Quick Board Reveal / Hide Helpers (Without Changing Points) */}
-          <div className="mt-3 pt-3 border-t border-blue-500/20 flex flex-wrap items-center justify-between gap-2">
-            <button
-              type="button"
-              onClick={handleRevealAllWithoutPoints}
-              className="flex-1 rounded-xl border border-emerald-500/50 bg-emerald-950/50 py-2 px-3 text-xs font-bold text-emerald-300 hover:bg-emerald-900/60 active:scale-95 transition-all"
-            >
-              👁️ كشف باقي الإجابات للجمهور (بدون نقاط)
-            </button>
-            <button
-              type="button"
-              onClick={handleHideAllAnswers}
-              className="rounded-xl border border-slate-700 bg-slate-900 py-2 px-3 text-xs font-bold text-slate-400 hover:text-white active:scale-95 transition-all"
-            >
-              🙈 إخفاء الكل
-            </button>
-          </div>
-        </div>
-
-        {/* 4. Giant Strike Button & Steal Actions (Touch-Friendly) */}
-        <div className="rounded-3xl border border-slate-800 bg-slate-900/90 p-4 space-y-3">
-          {/* Big Red Strike Button */}
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleStrike}
-              className="flex-1 flex items-center justify-center gap-3 rounded-2xl border-2 border-red-400 bg-gradient-to-b from-red-600 to-red-800 min-h-[64px] py-3.5 px-6 font-display font-black text-xl text-white active:scale-95 hover:brightness-110 transition-all"
-            >
-              <span className="text-3xl leading-none">❌</span>
-              <span>تسجيل خطأ ({state.strikes} من 3)</span>
-            </button>
-            {state.strikes > 0 && (
-              <button
-                type="button"
-                onClick={handleResetStrikes}
-                className="shrink-0 min-h-[64px] rounded-2xl border border-slate-700 bg-slate-800 px-5 text-xs font-bold text-slate-300 hover:bg-slate-700 active:scale-95 transition-all"
-              >
-                تصفير 0
-              </button>
-            )}
-          </div>
-
-          {/* Steal Banner if 3 Strikes */}
-          {state.phase === 'STEAL' && (
-            <div className="rounded-2xl border-2 border-red-500 bg-red-950/60 p-3.5 text-center">
-              <span className="font-display font-bold text-sm md:text-base text-red-200 block mb-2">
-                ⚡ فرصة سرقة النقاط (الفريق المتشاور: {state.stealTeam === 'A' ? state.teamA.name : state.teamB.name})
-              </span>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => handleResolveSteal(true)}
-                  className="rounded-xl bg-emerald-600 py-2.5 text-xs md:text-sm font-black text-white hover:bg-emerald-500"
-                >
-                  ✅ نجحت السرقة
-                </button>
-                <button
-                  onClick={() => handleResolveSteal(false)}
-                  className="rounded-xl bg-slate-700 py-2.5 text-xs md:text-sm font-black text-white hover:bg-slate-600"
-                >
-                  ❌ فشلت السرقة
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* 5. Awarding Points to Team A or B */}
-          <div className="rounded-2xl border border-slate-800 bg-slate-950 p-3">
-            <span className="text-xs text-slate-400 font-bold block mb-2 text-center">
-              تحويل نقاط بنك الجولة ({state.roundBank} نقطة) إلى:
-            </span>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => handleAwardBank('A')}
-                className="rounded-xl border border-blue-500 bg-blue-700 py-2.5 px-3 text-xs md:text-sm font-black text-white hover:bg-blue-600 active:scale-95 transition-all"
-              >
-                تحويل لـ {state.teamA.name} ➔
-              </button>
-              <button
-                onClick={() => handleAwardBank('B')}
-                className="rounded-xl border border-indigo-500 bg-indigo-700 py-2.5 px-3 text-xs md:text-sm font-black text-white hover:bg-indigo-600 active:scale-95 transition-all"
-              >
-                ➔ تحويل لـ {state.teamB.name}
-              </button>
-            </div>
-          </div>
-
-          {/* 6. Advance to Next Round */}
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            <button
-              onClick={handleNextRound}
-              className="flex-1 rounded-2xl border-2 border-amber-400 bg-gradient-to-r from-amber-500 to-amber-600 py-3 px-4 font-display font-black text-sm md:text-base text-slate-950 hover:brightness-110 active:scale-95 transition-all"
-            >
-              {state.currentRound < 4
-                ? `الانتقال للجولة ${state.currentRound + 1} (سؤال جديد) ⏭`
-                : 'سؤال جديد ⏭'}
-            </button>
-            <button
-              onClick={() => setShowTeamEditModal(true)}
-              className="rounded-2xl border border-slate-700 bg-slate-800 px-4 py-3 text-xs font-bold text-slate-300 hover:bg-slate-700"
-            >
-              تعديل الفرق ✏️
-            </button>
-            {onRestartGame && (
-              <button
-                onClick={onRestartGame}
-                className="rounded-2xl border border-red-500/40 bg-red-950/40 px-3.5 py-3 text-xs font-bold text-red-300 hover:bg-red-900/50"
-              >
-                تصفير اللعبة ↺
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* 7. Quick Soundboard */}
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-3">
-          <span className="text-xs font-bold text-slate-400 block mb-2">أصوات سريعة:</span>
-          <div className="flex flex-wrap items-center gap-1.5">
-            <button
-              onClick={() => triggerSound('chime')}
-              className="rounded-lg bg-slate-800 px-2.5 py-1 text-xs font-bold text-amber-300 hover:bg-slate-700"
-            >
-              🔔 رنة كشف
-            </button>
-            <button
-              onClick={() => {
-                updateState((prev) => ({
-                  ...prev,
-                  strikeOverlayActive: true,
-                  strikeOverlayCount: (prev.strikeOverlayCount || 0) + 1,
-                }));
-                triggerSound('strike');
-              }}
-              className="rounded-lg bg-slate-800 px-2.5 py-1 text-xs font-bold text-red-400 hover:bg-slate-700"
-            >
-              ❌ طنين خطأ
-            </button>
-            <button
-              onClick={() => triggerSound('bell')}
-              className="rounded-lg bg-slate-800 px-2.5 py-1 text-xs font-bold text-blue-300 hover:bg-slate-700"
-            >
-              🛎 جرس
-            </button>
-            <button
-              onClick={() => triggerSound('steal')}
-              className="rounded-lg bg-slate-800 px-2.5 py-1 text-xs font-bold text-emerald-300 hover:bg-slate-700"
-            >
-              ⚡ نغمة حماس
-            </button>
-            <button
-              onClick={() => triggerSound('fanfare')}
-              className="rounded-lg bg-slate-800 px-2.5 py-1 text-xs font-bold text-yellow-300 hover:bg-slate-700"
-            >
-              🎺 تزمير الفوز
-            </button>
-          </div>
-        </div>
-      </main>
-
-      {/* QUESTION BROWSER DRAWER */}
-      {showQuestionsDrawer && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
-          <div className="flex h-[85vh] w-full max-w-2xl flex-col rounded-3xl border-2 border-slate-700 bg-slate-900 overflow-hidden">
-            <div className="flex items-center justify-between border-b border-slate-800 p-4">
-              <h3 className="font-display font-extrabold text-lg text-white">
-                بنك الأسئلة ({questionBank.length} سؤال)
-              </h3>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowAddQuestionForm((v) => !v)}
-                  className="rounded-xl bg-amber-500 px-3 py-1.5 text-xs font-black text-slate-950 hover:bg-amber-400"
-                >
-                  {showAddQuestionForm ? 'العودة للقائمة' : '➕ إضافة سؤال خاص'}
-                </button>
-                <button
-                  onClick={() => setShowQuestionsDrawer(false)}
-                  className="rounded-xl bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-300"
-                >
-                  إغلاق ✕
-                </button>
-              </div>
-            </div>
-
-            {showAddQuestionForm ? (
-              <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                <div>
-                  <label className="text-xs font-bold text-slate-300 block mb-1">نص السؤال:</label>
-                  <input
-                    type="text"
-                    placeholder="مثال: اذكر شيئاً يفعله المسلم يوم الجمعة..."
-                    value={newQText}
-                    onChange={(e) => setNewQText(e.target.value)}
-                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-bold text-slate-300 block mb-1">التصنيف:</label>
-                  <input
-                    type="text"
-                    value={newQCategory}
-                    onChange={(e) => setNewQCategory(e.target.value)}
-                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-amber-300 block">الإجابات والنقاط:</label>
-                  {newQAnswers.map((ans, idx) => (
-                    <div key={idx} className="flex items-center gap-2">
-                      <span className="w-6 text-center text-xs font-black text-amber-400">{idx + 1}</span>
-                      <input
-                        type="text"
-                        placeholder={`الإجابة ${idx + 1}`}
-                        value={ans.text}
-                        onChange={(e) => {
-                          const next = [...newQAnswers];
-                          next[idx] = { ...next[idx], text: e.target.value };
-                          setNewQAnswers(next);
-                        }}
-                        className="flex-1 rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs text-white"
-                      />
-                      <input
-                        type="number"
-                        value={ans.points}
-                        onChange={(e) => {
-                          const next = [...newQAnswers];
-                          next[idx] = { ...next[idx], points: Number(e.target.value) || 0 };
-                          setNewQAnswers(next);
-                        }}
-                        className="w-20 rounded-xl border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-amber-300 text-center font-bold"
-                      />
-                    </div>
-                  ))}
-                  {newQAnswers.length < 8 && (
-                    <button
-                      type="button"
-                      onClick={() => setNewQAnswers([...newQAnswers, { text: '', points: 5 }])}
-                      className="text-xs font-bold text-blue-400 hover:text-blue-300"
-                    >
-                      + إضافة خانة إجابة أخرى
-                    </button>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  onClick={handleCreateCustomQuestion}
-                  className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-500 py-2.5 text-sm font-black text-white"
-                >
-                  حفظ وتشغيل السؤال الآن ✔
-                </button>
-              </div>
-            ) : (
-              <>
-                <div className="p-3 border-b border-slate-800 space-y-2">
-                  <input
-                    type="text"
-                    placeholder="ابحث في الأسئلة أو الأجوبة..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white"
-                  />
-                  <div className="flex flex-wrap gap-1">
-                    {categories.map((cat) => (
-                      <button
-                        key={cat}
-                        onClick={() => setSelectedCategory(cat)}
-                        className={`rounded-lg px-2.5 py-1 text-xs font-bold transition-colors ${
-                          selectedCategory === cat
-                            ? 'bg-amber-500 text-slate-950'
-                            : 'bg-slate-800 text-slate-400'
-                        }`}
-                      >
-                        {cat}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="flex-1 overflow-y-auto p-3 space-y-2">
-                  {filteredQuestions.map((q) => (
-                    <div
-                      key={q.id}
-                      onClick={() => handleSelectQuestion(q)}
-                      className="cursor-pointer rounded-xl border border-slate-800 bg-slate-950 hover:border-amber-400/60 p-3 flex items-center justify-between gap-3 transition-colors"
-                    >
-                      <div>
-                        <span className="text-[10px] text-amber-400 font-bold">
-                          #{q.id} · {q.category}
-                        </span>
-                        <h4 className="font-bold text-sm text-white">{q.questionText}</h4>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleSelectQuestion(q);
-                        }}
-                        className="shrink-0 rounded-lg bg-blue-600 hover:bg-blue-500 px-3 py-1.5 text-xs font-bold text-white"
-                      >
-                        اختيار ➔
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* TEAM EDIT MODAL */}
-      {showTeamEditModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
-          <div className="w-full max-w-sm rounded-3xl border border-slate-700 bg-slate-900 p-5">
-            <h3 className="font-display font-bold text-lg text-white mb-3">
-              تعديل أسماء ونقاط الفرق
-            </h3>
-            <div className="space-y-4">
-              {/* Team A */}
-              <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3 space-y-2">
-                <div>
-                  <label className="text-xs text-blue-300 font-bold block mb-1">اسم الفريق الأول:</label>
-                  <input
-                    type="text"
-                    value={state.teamA.name}
-                    onChange={(e) => {
-                      const name = e.target.value;
-                      updateState((prev) => ({ ...prev, teamA: { ...prev.teamA, name } }));
-                    }}
-                    className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-white"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-400 font-bold block mb-1">نقاط الفريق الأول:</label>
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      type="number"
-                      value={state.teamA.score}
-                      onChange={(e) => {
-                        const score = Number(e.target.value) || 0;
-                        updateState((prev) => ({ ...prev, teamA: { ...prev.teamA, score } }));
-                      }}
-                      className="w-24 rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm font-bold text-white text-center"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => updateState((prev) => ({ ...prev, teamA: { ...prev.teamA, score: prev.teamA.score + 10 } }))}
-                      className="rounded-lg bg-emerald-700 px-2.5 py-1.5 text-xs font-bold text-white"
-                    >
-                      +10
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => updateState((prev) => ({ ...prev, teamA: { ...prev.teamA, score: Math.max(0, prev.teamA.score - 10) } }))}
-                      className="rounded-lg bg-red-800 px-2.5 py-1.5 text-xs font-bold text-white"
-                    >
-                      -10
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => updateState((prev) => ({ ...prev, teamA: { ...prev.teamA, score: 0 } }))}
-                      className="rounded-lg bg-slate-800 px-2 py-1.5 text-xs text-slate-300"
-                    >
-                      0
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* Team B */}
-              <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3 space-y-2">
-                <div>
-                  <label className="text-xs text-indigo-300 font-bold block mb-1">اسم الفريق الثاني:</label>
-                  <input
-                    type="text"
-                    value={state.teamB.name}
-                    onChange={(e) => {
-                      const name = e.target.value;
-                      updateState((prev) => ({ ...prev, teamB: { ...prev.teamB, name } }));
-                    }}
-                    className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-white"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-400 font-bold block mb-1">نقاط الفريق الثاني:</label>
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      type="number"
-                      value={state.teamB.score}
-                      onChange={(e) => {
-                        const score = Number(e.target.value) || 0;
-                        updateState((prev) => ({ ...prev, teamB: { ...prev.teamB, score } }));
-                      }}
-                      className="w-24 rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm font-bold text-white text-center"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => updateState((prev) => ({ ...prev, teamB: { ...prev.teamB, score: prev.teamB.score + 10 } }))}
-                      className="rounded-lg bg-emerald-700 px-2.5 py-1.5 text-xs font-bold text-white"
-                    >
-                      +10
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => updateState((prev) => ({ ...prev, teamB: { ...prev.teamB, score: Math.max(0, prev.teamB.score - 10) } }))}
-                      className="rounded-lg bg-red-800 px-2.5 py-1.5 text-xs font-bold text-white"
-                    >
-                      -10
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => updateState((prev) => ({ ...prev, teamB: { ...prev.teamB, score: 0 } }))}
-                      className="rounded-lg bg-slate-800 px-2 py-1.5 text-xs text-slate-300"
-                    >
-                      0
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div className="mt-4 flex justify-end">
-              <button
-                onClick={() => setShowTeamEditModal(false)}
-                className="rounded-xl bg-amber-500 px-5 py-2 text-xs font-black text-slate-950 hover:bg-amber-400"
-              >
-                تم الحفظ
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+function MultiplierSettings({ values, disabled, send }: { values: readonly number[]; disabled: boolean; send: Props['send'] }) {
+  return <form className="remote-form" onSubmit={e => {
+    e.preventDefault(); const data = new FormData(e.currentTarget);
+    void send({ type: 'multipliers', values: values.map((_, i) => Number(data.get(`round${i}`))) });
+  }}>
+    <p>مضاعفات الجولات · تُضبط قبل بدء المباراة</p>
+    <div className="remote-multipliers">{values.map((value, index) => <label key={index}>جولة {index + 1}
+      <input type="number" name={`round${index}`} min={1} max={5} required defaultValue={value} disabled={disabled} />
+    </label>)}</div>
+    <button disabled={disabled}>اعتماد المضاعفات</button>
+  </form>;
 }

@@ -1,3 +1,5 @@
+import type { ShowCue, TeamId } from '../utils/roomCommands';
+
 export interface AnswerItem {
   text: string;
   points: number;
@@ -10,6 +12,7 @@ export interface Question {
   category: string;
   questionText: string;
   answers: AnswerItem[];
+  suggestedRound?: 1 | 2 | 3 | 4;
   difficulty?: 'easy' | 'medium' | 'hard';
   pointsSource?: PointsSource;
   sourceNote?: string;
@@ -35,6 +38,10 @@ export interface GameState {
   currentRound: number; // 1, 2, 3, 4
   roundMultiplier: number; // 1, 1, 2, 3
   roundBank: number;
+  multipliers?: number[];
+  matchStarted?: boolean;
+  timerVisible?: boolean;
+  showEvent?: { id: number; at: number; cue: ShowCue; index?: number; beneficiary?: TeamId; leadChanged?: boolean };
   currentQuestion: Question | null;
   revealedAnswers: boolean[];
   strikes: number; // 0, 1, 2, 3
